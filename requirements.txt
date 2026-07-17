@@ -1,4 +1,4 @@
-streamlit==1.32.0
-rdkit==2023.9.5
-py3Dmol==2.1.1
-stmol==0.1.0
+streamlit
+rdkit
+py3Dmol
+stmol
