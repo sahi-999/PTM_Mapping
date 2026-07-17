@@ -460,7 +460,6 @@ function addPtmStructuralReprs(comp, rn, ptm) {
 }
 
 function addBackboneHyperball(comp, sele, color, opacity, isOverview) {
-  // Renders the real atomic backbone connectivity (N-CA-C-O) as a native ball-and-stick model
   comp.addRepresentation("hyperball", {
     sele: sele + " AND (backbone OR sidechain)",
     color: color,
@@ -531,6 +530,7 @@ function _applyOverviewReps(selSeg) {
     } else {
       overviewComp.addRepresentation("cartoon", { color: "#1e293b", opacity: 0.12 });
       overviewComp.addRepresentation("cartoon", { sele: nglSele(selSeg.start, selSeg.end), color: "#f43f5e", opacity: 1.0 });
+      overviewComp.addRepresentation("tube", { sele: nglSele(selSeg.start, selSeg.end), color: "#f43f5e", radius: 0.5, opacity: 0.5 });
     }
     for (let i = selSeg.start - 1; i < selSeg.end; i++) { if (data.ptmMap[i]) addPtmStructuralReprs(overviewComp, i + 1, data.ptmMap[i]); }
   }
@@ -541,16 +541,135 @@ function _loadZoomPanel(seg) {
   document.getElementById("zoom-placeholder").style.display = "none";
   stageZoom.loadFile(data.PDB_URL).then(function(o) {
     addBackboneHyperball(o, nglSele(seg.start, seg.end), "#f43f5e", 1.0, false);
+    for (let i = seg.start - 1; i < seg.end; i++) { if (data.ptmMap[i]) addPtmStructuralReprs(o, i + 1, data.ptmMap[i]); }
     o.autoView(nglSele(seg.start, seg.end), 1500);
   });
 }
 
-function selectPeptide(seg) { selectedPeptide = seg; _loadZoomPanel(seg); _applyOverviewReps(seg); }
-function clearPeptideSelection() { selectedPeptide = null; stageZoom.removeAllComponents(); document.getElementById("zoom-placeholder").style.display = "flex"; _applyOverviewReps(null); }
-function updateGlobalFocus(resNum, scroll) { /* Sync logic intact */ }
+function selectPeptide(seg) { 
+  selectedPeptide = seg; 
+  _loadZoomPanel(seg); 
+  _applyOverviewReps(seg); 
+  document.getElementById("selection-badge").style.display = "block";
+  document.getElementById("badge-label").textContent = "Peptide " + seg.start + "–" + seg.end + "  ✕";
+  _update1DForSelection(seg);
+}
+
+function clearPeptideSelection() { 
+  selectedPeptide = null; 
+  stageZoom.removeAllComponents(); 
+  document.getElementById("zoom-placeholder").style.display = "flex"; 
+  document.getElementById("selection-badge").style.display = "none";
+  document.getElementById("seq-filter-note").style.display = "none";
+  _applyOverviewReps(null); 
+  _restore1DNormal();
+}
+
+function _update1DForSelection(seg) {
+  document.querySelectorAll("#sequence-container span[data-resnum]").forEach(function(span) {
+    const rn = parseInt(span.getAttribute("data-resnum"));
+    if (rn >= seg.start && rn <= seg.end) {
+      span.style.opacity = "1";
+      span.style.outline = "2px solid #f43f5e";
+      span.style.outlineOffset = "1px";
+      span.style.backgroundColor = span.getAttribute("data-orig-bg") || "transparent";
+    } else {
+      span.style.opacity = "0.2";
+      span.style.outline = "none";
+      span.style.backgroundColor = "transparent";
+    }
+  });
+  const anchor = document.getElementById("res-" + seg.start);
+  if (anchor) anchor.scrollIntoView({ behavior: "smooth", block: "center" });
+  document.getElementById("seq-filter-note").style.display = "inline-block";
+}
+
+function _restore1DNormal() {
+  document.querySelectorAll("#sequence-container span[data-resnum]").forEach(function(span) {
+    span.style.opacity = "1";
+    span.style.outline = "none";
+    span.style.backgroundColor = span.getAttribute("data-orig-bg") || "transparent";
+  });
+}
+
+function populateHudCard(resNum, letter, isDetected, plddt, ptm) {
+  document.getElementById("card-residue").innerText = "Residue: " + letter + resNum;
+  const plddtEl = document.getElementById("card-plddt");
+  plddtEl.innerText = "pLDDT: " + plddt.toFixed(1);
+  if (plddt >= 90) { plddtEl.style.backgroundColor = "#1e3a8a"; plddtEl.style.color = "#93c5fd"; }
+  else if (plddt >= 70) { plddtEl.style.backgroundColor = "#065f46"; plddtEl.style.color = "#6ee7b7"; }
+  else { plddtEl.style.backgroundColor = "#9a3412"; plddtEl.style.color = "#fdba74"; }
+
+  document.getElementById("card-status").innerHTML = "Status: " + (isDetected ? '<span style="color:#60a5fa;font-weight:bold;">Detected in Assay</span>' : '<span style="color:#64748b;">Undetected Sequence</span>');
+
+  const ptmEl = document.getElementById("card-ptm");
+  if (ptm) {
+    ptmEl.style.display = "block";
+    document.getElementById("card-ptm-name").innerHTML = '<span style="color:' + ptm.color + ';">' + ptm.name + '</span>';
+  } else {
+    ptmEl.style.display = "none";
+  }
+  document.getElementById("hover-card").style.display = "block";
+}
+
+function updateGlobalFocus(resNum, triggeredFromCanvas) {
+  const idx = resNum - 1;
+  if (idx < 0 || idx >= data.fullSeq.length) return;
+
+  if (overviewComp && !triggeredFromCanvas) {
+    if (currentHighlightRep) { try { overviewComp.removeRepresentation(currentHighlightRep); } catch(e) {} }
+    currentHighlightRep = overviewComp.addRepresentation("spacefill", { sele: nglSele(resNum, resNum) + ".CA", color: "#f43f5e", scale: 1.6 });
+  }
+
+  if (!selectedPeptide) {
+    document.querySelectorAll("#sequence-container span[data-resnum]").forEach(function(s) {
+      s.style.outline = "none"; s.style.transform = "none"; s.style.backgroundColor = s.getAttribute("data-orig-bg") || "transparent";
+    });
+  }
+
+  const span = document.getElementById("res-" + resNum);
+  if (span) {
+    span.style.outline = "3px solid #f43f5e"; span.style.transform = "scale(1.3)"; span.style.zIndex = "100"; span.style.backgroundColor = "#fee2e2";
+    if (triggeredFromCanvas) span.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+  populateHudCard(resNum, data.fullSeq[idx], data.detectionMap[idx], data.plddtMap[idx], data.ptmMap[idx]);
+}
+
+const container = document.getElementById("sequence-container");
+data.detectionMap.forEach(function(isDetected, i) {
+  const resNum = i + 1;
+  const ptm = data.ptmMap[i];
+
+  const wrapper = document.createElement("div");
+  wrapper.style.display = "inline-block"; wrapper.style.position = "relative";
+
+  const span = document.createElement("span");
+  span.innerText = data.fullSeq[i]; span.id = "res-" + resNum; span.setAttribute("data-resnum", resNum);
+  span.style.padding = "2px 4px"; span.style.cursor = "pointer"; span.style.borderRadius = "4px"; span.style.transition = "all 0.12s ease";
+
+  if (isDetected) {
+    span.style.backgroundColor = "#dbeafe"; span.setAttribute("data-orig-bg", "#dbeafe"); span.style.color = "#1e40af"; span.style.fontWeight = "bold";
+  } else {
+    span.style.color = "#94a3b8"; span.setAttribute("data-orig-bg", "transparent");
+  }
+
+  if (ptm) {
+    const dot = document.createElement("div");
+    dot.style.position = "absolute"; dot.style.top = "-4px"; dot.style.left = "35%"; dot.style.width = "8px"; dot.style.height = "8px";
+    dot.style.borderRadius = "50%"; dot.style.backgroundColor = ptm.color; dot.style.border = "1.5px solid #ffffff";
+    wrapper.appendChild(dot);
+  }
+
+  span.addEventListener("mouseenter", function() { updateGlobalFocus(resNum, false); });
+  span.addEventListener("click", function() { updateGlobalFocus(resNum, false); });
+
+  wrapper.appendChild(span);
+  container.appendChild(wrapper);
+});
 </script>
 """
 
 components.html(custom_viewer_html, height=800)
+
 st.subheader("📋 Active Dataset Rows")
 st.dataframe(protein_df, use_container_width=True)
