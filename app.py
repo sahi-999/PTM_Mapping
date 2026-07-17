@@ -16,7 +16,7 @@ It calculates the exact covalent bond lengths, van der Waals atomic radii, and t
 """)
 
 # ==========================================
-# CUSTOM NATIVE RENDERER (The Fix)
+# CUSTOM NATIVE RENDERER
 # ==========================================
 def render_mol(view, height=500):
     """Renders a py3Dmol viewer natively in Streamlit, bypassing stmol entirely."""
@@ -26,8 +26,9 @@ def render_mol(view, height=500):
 # ==========================================
 # CHEMICAL REACTION DEFINITION
 # ==========================================
-# This rule finds the Oxygen on the Serine sidechain and covalently attaches a Phosphate group.
-PHOSPHORYLATION_SMARTS = '[CH2:1]-[OH:2] >> [CH2:1]-[O:2]-P(=O)(O)O'
+# FIX 1: We explicitly define the hydrogens on the new Phosphate oxygens ([OH1]) 
+# so the physics engine doesn't miscalculate their valence bonds.
+PHOSPHORYLATION_SMARTS = '[CH2:1]-[OH1:2] >> [CH2:1]-[O:2]-P(=O)([OH1])[OH1]'
 rxn = AllChem.ReactionFromSmarts(PHOSPHORYLATION_SMARTS)
 
 @st.cache_data
@@ -49,6 +50,10 @@ def generate_physical_ptm(smiles_sequence):
     
     # Step 4: Extract the newly modified molecule
     modified_mol = products[0][0]
+    
+    # FIX 2: Sanitize the newly created molecule to recalculate correct chemical 
+    # properties and ring valences BEFORE passing it to the 3D embedding engine.
+    Chem.SanitizeMol(modified_mol)
     modified_mol = Chem.AddHs(modified_mol) 
     
     # Step 5: Physics simulation to calculate true scale and angles for the new PTM
@@ -83,20 +88,21 @@ with col1:
     view_unmod.setStyle({'stick': {'radius': 0.15}, 'sphere': {'scale': 0.3}}) 
     view_unmod.zoomTo()
     
-    # Use our safe, native renderer
     render_mol(view_unmod, height=500)
 
 with col2:
     st.markdown("### 2. Modified Residue (True Scale)")
     st.caption("Physics engine has calculated exact atomic volume and bonds of the Phosphate.")
     
-    view_mod = py3Dmol.view(width=500, height=500)
-    view_mod.addModel(mol_to_pdb_block(mod_mol), "pdb")
-    view_mod.setStyle({'stick': {'radius': 0.15}, 'sphere': {'scale': 0.3}})
-    
-    # Draw a translucent actual-size physical surface over it to show real mass
-    view_mod.addSurface(py3Dmol.VDW, {'opacity': 0.6, 'color': 'white'})
-    view_mod.zoomTo()
-    
-    # Use our safe, native renderer
-    render_mol(view_mod, height=500)
+    if mod_mol:
+        view_mod = py3Dmol.view(width=500, height=500)
+        view_mod.addModel(mol_to_pdb_block(mod_mol), "pdb")
+        view_mod.setStyle({'stick': {'radius': 0.15}, 'sphere': {'scale': 0.3}})
+        
+        # Draw a translucent actual-size physical surface over it to show real mass
+        view_mod.addSurface(py3Dmol.VDW, {'opacity': 0.6, 'color': 'white'})
+        view_mod.zoomTo()
+        
+        render_mol(view_mod, height=500)
+    else:
+        st.error("The chemical reaction failed to process.")
