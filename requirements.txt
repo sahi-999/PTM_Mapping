@@ -1,4 +1,8 @@
 streamlit
-rdkit
+numpy
+pandas
+plotly
+matplotlib
+biopython
+requests
 py3Dmol
-
