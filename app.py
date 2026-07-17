@@ -9,9 +9,10 @@ import numpy as np
 from typing import List, Tuple
 from bs4 import BeautifulSoup
 from Bio import SeqIO
-from Bio.PDB import PDBParser, PDBIO, Select
-import streamlit.components.v1 as componentsimport io
 from Bio.PDB.MMCIFParser import MMCIFParser
+from Bio.PDB import PDBParser, PDBIO, Select
+import streamlit.components.v1 as components
+import io
 
 # ====================== PAGE SETUP ======================
 st.set_page_config(page_title="RCSB Proteomics Engine Pro", layout="wide")
