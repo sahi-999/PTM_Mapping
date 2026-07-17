@@ -10,7 +10,8 @@ from typing import List, Tuple
 from bs4 import BeautifulSoup
 from Bio import SeqIO
 from Bio.PDB import PDBParser, PDBIO, Select
-import streamlit.components.v1 as components
+import streamlit.components.v1 as componentsimport io
+from Bio.PDB.MMCIFParser import MMCIFParser
 
 # ====================== PAGE SETUP ======================
 st.set_page_config(page_title="RCSB Proteomics Engine Pro", layout="wide")
@@ -169,20 +170,50 @@ pdb_text      = ""
 def fetch_alphafold_fallback(uniprot_id):
     clean_id = uniprot_id.split(';')[0].split('-')[0].strip()
     url = f"https://alphafold.ebi.ac.uk/api/prediction/{clean_id}"
+    
     try:
-        response = requests.get(url, timeout=10)
+        # EBI sometimes blocks requests without a standard User-Agent
+        headers = {"User-Agent": "Mozilla/5.0"}
+        response = requests.get(url, headers=headers, timeout=15)
+        
         if response.status_code == 200 and response.json():
             data = response.json()[0]
-            pdb_url = data.get("pdbUrl")
             seq = data.get("uniprotSequence")
             
-            # Fetch actual PDB text for physical modification
-            pdb_res = requests.get(pdb_url)
-            pdb_text = pdb_res.text if pdb_res.status_code == 200 else ""
+            # AlphaFold v4+ often omits 'pdbUrl' entirely
+            pdb_url = data.get("pdbUrl")
+            cif_url = data.get("cifUrl")
             
-            return pdb_url, seq, pdb_text
-    except Exception:
+            pdb_text = ""
+            
+            # 1. Try to fetch legacy PDB format first
+            if pdb_url:
+                pdb_res = requests.get(pdb_url, headers=headers, timeout=15)
+                if pdb_res.status_code == 200:
+                    pdb_text = pdb_res.text
+                    
+            # 2. If PDB is missing, fetch CIF and translate it to PDB in-memory
+            if not pdb_text and cif_url:
+                cif_res = requests.get(cif_url, headers=headers, timeout=15)
+                if cif_res.status_code == 200:
+                    
+                    # Parse the mmCIF file into a Biopython Structure
+                    parser = MMCIFParser(QUIET=True)
+                    structure = parser.get_structure(clean_id, io.StringIO(cif_res.text))
+                    
+                    # Save it as a strict 80-column PDB string for our grafting engine
+                    io_out = PDBIO()
+                    io_out.set_structure(structure)
+                    out_stream = io.StringIO()
+                    io_out.save(out_stream)
+                    pdb_text = out_stream.getvalue()
+                    
+            return pdb_url or cif_url, seq, pdb_text
+            
+    except Exception as e:
+        print(f"AlphaFold fetching error: {e}")
         pass
+        
     return None, None, ""
 
 af_pdb_url, full_sequence, pdb_text = fetch_alphafold_fallback(selected_protein)
