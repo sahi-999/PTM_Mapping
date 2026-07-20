@@ -19,7 +19,8 @@ st.markdown("""
 2. **3D Structure ➔ 1D Sequence**: Hover or click directly on any ribbon or atom in the 3D viewport. NGL captures the raycast event, **scrolls the 1D sequence grid directly to that exact residue, and highlights it** instantly.
 3. **Peptide Selection**: Click any detected peptide (blue region) in the 3D structure to **zoom into it** in the inset panel, ghost the rest, and grey out the 1D sequence outside that peptide.
 
-> ⚠️ **Note on PTM rendering**: AlphaFold structures model the *unmodified* protein — the atoms of a phosphate/acetyl/etc. group don't physically exist in the file. PTM Visualization Note: AlphaFold structures represent the unmodified protein. When True Atomic Scale is enabled, all displayed atoms are rendered using their actual van der Waals radii. Because AlphaFold structures do not contain the additional atoms of post-translational modifications (e.g., phosphate, acetyl, glycan), the viewer highlights the modified residue at its true atomic scale rather than displaying the complete PTM chemical group.
+> ⚠️ **Note on PTM rendering**: AlphaFold structures model the *unmodified* protein — the atoms of a phosphate/acetyl/etc. group don't physically exist in the file. PTM Visualization Note: AlphaFold structures represent the unmodified protein. When True Atomic Scale is enabled, all displayed atoms are rendered using their actual van der Waals radii.
+Because AlphaFold structures do not contain the additional atoms of post-translational modifications (e.g., phosphate, acetyl, glycan), the viewer highlights the modified residue at its true atomic scale rather than displaying the complete PTM chemical group.""")
 
 # ====================== FILE UPLOADS ======================
 col1, col2 = st.columns(2)
@@ -864,6 +865,7 @@ detectionMap.forEach(function(isDetected, i) {
   container.appendChild(wrapper);
 });
 </script>
+
 """
 
 components.html(custom_viewer_html, height=800)
