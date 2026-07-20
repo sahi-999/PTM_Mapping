@@ -460,12 +460,12 @@ function addPtmStructuralReprs(comp, rn, ptm) {
 }
 
 function addBackboneHyperball(comp, sele, color, opacity, isOverview) {
-  // Changed representation to NGL's 'ball+stick' and restricted ONLY to backbone atoms
+  // Using ball+stick with 'covalent' radius creates the stick-like structure
   comp.addRepresentation("ball+stick", {
     sele: sele + " AND backbone", 
     color: color,
-    radiusType: "vdw",       // Uses van der Waals radii for that authentic CPK look
-    scale: data.atomScale,   // Controlled by your Streamlit slider
+    radiusType: "covalent",  // <-- This changes it from massive bubbles to clean sticks/balls
+    scale: data.atomScale,   // Scales cleanly using your sidebar slider
     opacity: opacity,
     sphereDetail: isOverview ? 1 : 2,
     radialSegments: isOverview ? 10 : 20
