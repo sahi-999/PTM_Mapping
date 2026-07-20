@@ -460,15 +460,15 @@ function addPtmStructuralReprs(comp, rn, ptm) {
 }
 
 function addBackboneHyperball(comp, sele, color, opacity, isOverview) {
-  comp.addRepresentation("hyperball", {
-    sele: sele + " AND (backbone OR sidechain)",
+  // Changed representation to NGL's 'ball+stick' and restricted ONLY to backbone atoms
+  comp.addRepresentation("ball+stick", {
+    sele: sele + " AND backbone", 
     color: color,
-    radiusType: "covalent",
-    scale: data.atomScale,
-    shrink: 0.15,
+    radiusType: "vdw",       // Uses van der Waals radii for that authentic CPK look
+    scale: data.atomScale,   // Controlled by your Streamlit slider
+    opacity: opacity,
     sphereDetail: isOverview ? 1 : 2,
-    radialSegments: isOverview ? 6 : 10,
-    opacity: opacity
+    radialSegments: isOverview ? 10 : 20
   });
 }
 
