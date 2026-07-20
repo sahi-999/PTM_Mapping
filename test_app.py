@@ -308,18 +308,10 @@ if stripped_col and modified_col:
                     clean_mod_str = clean_mod_str[1:]
             start_idx = full_sequence.find(pep, start_idx + 1)
 
-# ====================== SIDEBAR ======================
-st.sidebar.subheader("Visualization Modifiers")
+# ====================== SIDEBAR MODIFIERS ======================
+st.sidebar.subheader("👁️ Visualization Modifiers")
 enable_surface  = st.sidebar.toggle("Render Solvent Accessible Surface", value=False)
 surface_opacity = st.sidebar.slider("Surface Opacity", 0.0, 1.0, 0.3) if enable_surface else 0.0
-
-# ----------------- NEW TOGGLE -----------------
-true_scale_ptm = st.sidebar.toggle(
-    "📏 True-to-Scale PTMs (100% vdW)", 
-    value=False, 
-    help="Force PTM atoms and bonds to render at their actual physical van der Waals radii, rather than stylistically shrinking them."
-)
-# ----------------------------------------------
 
 st.sidebar.subheader("🧬 Backbone Rendering Style")
 backbone_style_choice = st.sidebar.radio(
@@ -329,6 +321,21 @@ backbone_style_choice = st.sidebar.radio(
     help="Switch how the protein backbone/chain is rendered."
 )
 backbone_style = "cpk" if backbone_style_choice.startswith("⚛️") else "ribbon"
+
+# ----------------- TRUE-TO-SCALE TOGGLES -----------------
+st.sidebar.subheader("📏 True-to-Scale Sizes")
+st.sidebar.caption("By default, structures are stylistically shrunk for better visibility. Toggle these to see physical 100% vdW radii.")
+
+true_scale_ptm = st.sidebar.toggle(
+    "100% Scale PTM Atoms", 
+    value=False
+)
+true_scale_backbone = st.sidebar.toggle(
+    "100% Scale Backbone Atoms", 
+    value=False,
+    help="Only takes effect if backbone rendering style is set to CPK / Hyperball."
+)
+# ---------------------------------------------------------
 
 st.sidebar.subheader("🎯 Manual Structure Region Selector")
 st.sidebar.caption("Pick any residue range in the structure to zoom into — independent of detected peptides.")
@@ -372,7 +379,8 @@ js_data = {
     "PDB_URL": pdb_url or "",
     "ENABLE_SURF": bool(enable_surface),
     "SURF_OPACITY": float(surface_opacity),
-    "TRUE_SCALE_PTM": bool(true_scale_ptm),  # Pass python state to JS
+    "TRUE_SCALE_PTM": bool(true_scale_ptm),           # Pass PTM state
+    "TRUE_SCALE_BACKBONE": bool(true_scale_backbone), # Pass Backbone state
     "backboneStyle": backbone_style,         
     "manualSelection": st.session_state.manual_zoom  
 }
@@ -380,7 +388,6 @@ js_data = {
 custom_viewer_html = """
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-
   #root-layout { display: flex; flex-direction: column; gap: 16px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
   #panels-row { display: flex; gap: 16px; width: 100%; }
   .panel-wrap { flex: 1; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
@@ -450,16 +457,17 @@ custom_viewer_html = """
 <script>
 const data = """ + json.dumps(js_data) + """;
 
-const fullSeq          = data.fullSeq;
-const detectionMap     = data.detectionMap;
-const ptmMap           = data.ptmMap;
-const plddtMap         = data.plddtMap;
-const PDB_URL          = data.PDB_URL;
-const ENABLE_SURF      = data.ENABLE_SURF;
-const SURF_OPACITY     = data.SURF_OPACITY;
-const BACKBONE_STYLE   = data.backboneStyle;
-const MANUAL_SELECTION = data.manualSelection; 
-const TRUE_SCALE_PTM   = data.TRUE_SCALE_PTM; // Bind JS variable to Python Toggle State
+const fullSeq             = data.fullSeq;
+const detectionMap        = data.detectionMap;
+const ptmMap              = data.ptmMap;
+const plddtMap            = data.plddtMap;
+const PDB_URL             = data.PDB_URL;
+const ENABLE_SURF         = data.ENABLE_SURF;
+const SURF_OPACITY        = data.SURF_OPACITY;
+const BACKBONE_STYLE      = data.backboneStyle;
+const MANUAL_SELECTION    = data.manualSelection; 
+const TRUE_SCALE_PTM      = data.TRUE_SCALE_PTM; 
+const TRUE_SCALE_BACKBONE = data.TRUE_SCALE_BACKBONE; 
 
 function addPtmStructuralReprs(comp, rn, ptm, opts) {
   if (!ptm) return;
@@ -473,7 +481,7 @@ function addPtmStructuralReprs(comp, rn, ptm, opts) {
   const mass     = ptm.mass || 0;
   const reprType = ptm.repr_type || "hyperball";
 
-  // LOGIC FIX: Check TRUE_SCALE_PTM. If true, use 1.0. Otherwise fall back to stylistic scales.
+  // Use 1.0 scale if TRUE_SCALE_PTM is on, otherwise fall back to stylistically scaled sizes
   const stickScale = TRUE_SCALE_PTM ? 1.0 : (emphasize ? 0.65 : 0.32);
   const stickSele  = emphasize
     ? baseSele + " AND (sidechain OR .CA OR .CB OR .C OR .N OR .O)"
@@ -486,7 +494,6 @@ function addPtmStructuralReprs(comp, rn, ptm, opts) {
     opacity: 1.0
   });
 
-  // Scales for additional structural highlights
   const anchorScale  = TRUE_SCALE_PTM ? 1.0 : 0.45;
   const pAnchorScale = TRUE_SCALE_PTM ? 1.0 : stickScale;
   const sAnchorScale = TRUE_SCALE_PTM ? 1.0 : (emphasize ? 0.6 : 0.4);
@@ -494,28 +501,21 @@ function addPtmStructuralReprs(comp, rn, ptm, opts) {
 
   if (emphasize) {
     comp.addRepresentation("spacefill", {
-      sele: baseSele + " AND .CA",
-      color: color,
-      scale: anchorScale,
-      opacity: 1.0
+      sele: baseSele + " AND .CA", color: color, scale: anchorScale, opacity: 1.0
     });
   }
-
   if (compStr.includes("P")) {
     comp.addRepresentation("spacefill", {
       sele: baseSele + " AND .CA", color: color, scale: pAnchorScale, opacity: 0.6
     });
   }
-
   if (compStr.includes("S") && mass > 30) {
     ["SD", "SG"].forEach(function(atom) {
       comp.addRepresentation("spacefill", {
-        sele: baseSele + " AND ." + atom,
-        color: "#f0abfc", scale: sAnchorScale, opacity: 0.8
+        sele: baseSele + " AND ." + atom, color: "#f0abfc", scale: sAnchorScale, opacity: 0.8
       });
     });
   }
-
   if (compStr.includes("N") && compStr.includes("O") && mass > 30) {
     comp.addRepresentation("spacefill", {
       sele: baseSele + " AND .OH", color: "#fed7aa", scale: nAnchorScale, opacity: 0.8
@@ -527,11 +527,7 @@ function addPtmStructuralReprs(comp, rn, ptm, opts) {
       sele: baseSele + " AND .CA",
       labelType: "text",
       labelText: ptm.name + (mass ? (" (+" + mass.toFixed(2) + " Da)") : ""),
-      color: color,
-      scale: 1.2,
-      showBackground: true,
-      backgroundColor: "black",
-      backgroundOpacity: 0.6
+      color: color, scale: 1.2, showBackground: true, backgroundColor: "black", backgroundOpacity: 0.6
     });
   }
 }
@@ -539,17 +535,17 @@ function addPtmStructuralReprs(comp, rn, ptm, opts) {
 function addBackboneRepr(comp, sele, color, opacity, opts) {
   opts = opts || {};
   if (BACKBONE_STYLE === "cpk") {
+    // If True Scale Backbone is on, force a scale of 1.0 for the hyperball representation
+    const drawScale = TRUE_SCALE_BACKBONE ? 1.0 : (opts.cpkScale || 0.22);
     comp.addRepresentation("hyperball", {
       sele: sele,
       color: color,
       opacity: opacity,
-      scale: opts.cpkScale || 0.22 
+      scale: drawScale 
     });
   } else {
     comp.addRepresentation(opts.reprType || "cartoon", {
-      sele: sele,
-      color: color,
-      opacity: opacity
+      sele: sele, color: color, opacity: opacity
     });
   }
 }
