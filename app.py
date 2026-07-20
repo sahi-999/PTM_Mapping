@@ -337,13 +337,13 @@ surface_opacity = st.sidebar.slider("Surface Opacity", 0.0, 1.0, 0.3) if enable_
 
 # ====================== BACKBONE RENDERING STYLE ======================
 st.sidebar.subheader("🧪 Backbone Rendering Style")
-backbone_style_choice = st.sidebar.radio(
-    "Backbone representation (overview panel)",
-    ["Hyperball (atomic stick-and-ball — native style)", "Cartoon (ribbon — legacy)"],
-    index=0,
-    help="Hyperball renders actual backbone atoms as physical stick-and-ball coordinates, matching PTM structural rendering."
+
+# Replaced the radio button with a streamlined toggle switch
+use_hyperball_backbone = st.sidebar.toggle(
+    "Show stick-and-ball backbone (instead of ribbon)",
+    value=True,
+    help="When enabled, renders the backbone atoms as a physical stick-and-ball (hyperball) model instead of the traditional ribbon/cartoon."
 )
-use_hyperball_backbone = backbone_style_choice.startswith("Hyperball")
 
 atom_scale = st.sidebar.slider(
     "Atom sphere scale (both backbone & PTMs)",
