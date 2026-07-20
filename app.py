@@ -645,8 +645,21 @@ const MANUAL_SELECTION = data.manualSelection;  // {start, end} from the sidebar
 // NOTE: this function is completely independent of BACKBONE_STYLE — PTM
 // sites always render this way, whether the backbone toggle is set to
 // Ribbon or CPK.
-function addPtmStructuralReprs(comp, rn, ptm, withLabel = false) {
+//
+// `opts.emphasize` is the key switch for the overview panel: the overview
+// camera sits pulled back over the whole structure (autoView on the full
+// polymer), so a PTM rendered at the zoom panel's scale (0.32) shrinks to a
+// few pixels and effectively disappears next to the backbone. When
+// emphasize is true, the SAME representation type (hyperball — i.e. the
+// same "stick" appearance as the zoom panel) is drawn at a larger scale
+// over a wider slice of the residue's atoms, plus every PTM gets an
+// always-on colored anchor sphere so it's identifiable at a glance — not
+// just phosphorus-bearing ones as before.
+function addPtmStructuralReprs(comp, rn, ptm, opts) {
   if (!ptm) return;
+  opts = opts || {};
+  const withLabel = !!opts.withLabel;
+  const emphasize = !!opts.emphasize;
 
   const baseSele = nglSele(rn, rn);
   const color    = ptm.color || "#436da9";
@@ -655,20 +668,40 @@ function addPtmStructuralReprs(comp, rn, ptm, withLabel = false) {
   const reprType = ptm.repr_type || "hyperball";
 
   // Primary chemically-accurate representation of the modified residue.
-  // Scale kept modest (0.32) so this reads as an atomic-detail accent on
-  // the residue, not a blob that swallows the surrounding backbone shape.
+  // Same reprType (hyperball) in both panels — only scale + atom coverage
+  // change so it stays legible from the overview's zoomed-out camera.
+  const stickScale = emphasize ? 0.65 : 0.32;
+  const stickSele   = emphasize
+    ? baseSele + " AND (sidechain OR .CA OR .CB OR .C OR .N OR .O)"
+    : baseSele + " AND sidechain";
+
   comp.addRepresentation(reprType, {
-    sele: baseSele + " AND sidechain",
+    sele: stickSele,
     color: color,
-    scale: 0.32,
+    scale: stickScale,
     opacity: 1.0
   });
 
-  // Phosphorus-bearing mods → single small anchor sphere on Cα (phosphorylation, etc.)
-  // Only rendered for P-containing mods, so most PTMs add zero extra spheres.
+  // Always-on colored anchor sphere at Cα — this is what actually makes
+  // each PTM identifiable as a distinct colored marker in the zoomed-out
+  // overview, regardless of chemistry. Skipped in the zoom panel since the
+  // camera is already tight on the residue and the hyperball detail above
+  // is plenty visible on its own there.
+  if (emphasize) {
+    comp.addRepresentation("spacefill", {
+      sele: baseSele + " AND .CA",
+      color: color,
+      scale: 0.45,
+      opacity: 1.0
+    });
+  }
+
+  // Phosphorus-bearing mods → extra anchor sphere on Cα (phosphorylation, etc.)
+  // Only rendered for P-containing mods, so most PTMs add zero extra spheres
+  // beyond the always-on anchor above.
   if (compStr.includes("P")) {
     comp.addRepresentation("spacefill", {
-      sele: baseSele + " AND .CA", color: color, scale: 0.32, opacity: 0.6
+      sele: baseSele + " AND .CA", color: color, scale: stickScale, opacity: 0.6
     });
   }
 
@@ -677,7 +710,7 @@ function addPtmStructuralReprs(comp, rn, ptm, withLabel = false) {
     ["SD", "SG"].forEach(function(atom) {
       comp.addRepresentation("spacefill", {
         sele: baseSele + " AND ." + atom,
-        color: "#f0abfc", scale: 0.4, opacity: 0.8
+        color: "#f0abfc", scale: emphasize ? 0.6 : 0.4, opacity: 0.8
       });
     });
   }
@@ -685,15 +718,9 @@ function addPtmStructuralReprs(comp, rn, ptm, withLabel = false) {
   // Nitrogen+oxygen heavy mods (e.g. nitration) → hydroxyl oxygen only
   if (compStr.includes("N") && compStr.includes("O") && mass > 30) {
     comp.addRepresentation("spacefill", {
-      sele: baseSele + " AND .OH", color: "#fed7aa", scale: 0.35, opacity: 0.8
+      sele: baseSele + " AND .OH", color: "#fed7aa", scale: emphasize ? 0.55 : 0.35, opacity: 0.8
     });
   }
-
-  // NOTE: the old "always-present Cα marker" spacefill sphere was removed
-  // here — it fired on every single PTM regardless of chemistry and was
-  // the main reason the whole structure ended up reading as a cluster of
-  // spheres. The hyperball sidechain representation above already marks
-  // the site with real atomic geometry, so no generic filler sphere is needed.
 
   if (withLabel) {
     comp.addRepresentation("label", {
@@ -843,7 +870,7 @@ function _applyOverviewReps(selSeg) {
     ptmMap.forEach(function(ptm, idx) {
       if (ptm !== null) {
         const rn = idx + 1;
-        addPtmStructuralReprs(overviewComp, rn, ptm, false);
+        addPtmStructuralReprs(overviewComp, rn, ptm, { emphasize: true, withLabel: false });
       }
     });
 
@@ -878,7 +905,7 @@ function _applyOverviewReps(selSeg) {
     for (let i = selSeg.start - 1; i < selSeg.end; i++) {
       if (ptmMap[i] !== null) {
         const rn = i + 1;
-        addPtmStructuralReprs(overviewComp, rn, ptmMap[i], false);
+        addPtmStructuralReprs(overviewComp, rn, ptmMap[i], { emphasize: true, withLabel: false });
       }
     }
   }
@@ -915,7 +942,7 @@ function _loadZoomPanel(seg) {
     for (let i = seg.start - 1; i < seg.end; i++) {
       if (ptmMap[i] !== null) {
         const rn = i + 1;
-        addPtmStructuralReprs(o, rn, ptmMap[i], true);
+        addPtmStructuralReprs(o, rn, ptmMap[i], { emphasize: false, withLabel: true });
       }
     }
 
