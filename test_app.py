@@ -19,8 +19,7 @@ st.markdown("""
 2. **3D Structure ➔ 1D Sequence**: Hover or click directly on any ribbon or atom in the 3D viewport. NGL captures the raycast event, **scrolls the 1D sequence grid directly to that exact residue, and highlights it** instantly.
 3. **Peptide Selection**: Click any detected peptide (blue region) in the 3D structure to **zoom into it** in the inset panel, ghost the rest, and grey out the 1D sequence outside that peptide.
 
-> ⚠️ **Note on PTM rendering**: AlphaFold structures model the *unmodified* protein — the atoms of a phosphate/acetyl/etc. group don't physically exist in the file. PTMs are rendered as a chemically-accurate **hyperball** (CPK-style) model at the real modification site on the existing residue atoms, colored and labeled using data fetched live from each modification's own UNIMOD record page.
-""")
+> ⚠️ **Note on PTM rendering**: AlphaFold structures model the *unmodified* protein — the atoms of a phosphate/acetyl/etc. group don't physically exist in the file. PTM Visualization Note: AlphaFold structures represent the unmodified protein. When True Atomic Scale is enabled, all displayed atoms are rendered using their actual van der Waals radii. Because AlphaFold structures do not contain the additional atoms of post-translational modifications (e.g., phosphate, acetyl, glycan), the viewer highlights the modified residue at its true atomic scale rather than displaying the complete PTM chemical group.
 
 # ====================== FILE UPLOADS ======================
 col1, col2 = st.columns(2)
@@ -322,18 +321,21 @@ backbone_style_choice = st.sidebar.radio(
 )
 backbone_style = "cpk" if backbone_style_choice.startswith("⚛️") else "ribbon"
 
-# ----------------- TRUE-TO-SCALE TOGGLES -----------------
-st.sidebar.subheader("📏 True-to-Scale Sizes")
-st.sidebar.caption("By default, structures are stylistically shrunk for better visibility. Toggle these to see physical 100% vdW radii.")
+# ---------------- TRUE ATOMIC SCALE ----------------
+st.sidebar.subheader("⚖️ Atomic Geometry")
 
-true_scale_ptm = st.sidebar.toggle(
-    "100% Scale PTM Atoms", 
-    value=False
-)
-true_scale_backbone = st.sidebar.toggle(
-    "100% Scale Backbone Atoms", 
+true_atomic_scale = st.sidebar.toggle(
+    "Display atoms at true physical size",
     value=False,
-    help="Only takes effect if backbone rendering style is set to CPK / Hyperball."
+    help="""
+OFF:
+Atoms are scaled smaller for a cleaner visualization.
+
+ON:
+Atoms are rendered using their actual van der Waals radii,
+making PTM sites and protein atoms appear at physically
+correct relative sizes.
+"""
 )
 # ---------------------------------------------------------
 
@@ -379,8 +381,7 @@ js_data = {
     "PDB_URL": pdb_url or "",
     "ENABLE_SURF": bool(enable_surface),
     "SURF_OPACITY": float(surface_opacity),
-    "TRUE_SCALE_PTM": bool(true_scale_ptm),           # Pass PTM state
-    "TRUE_SCALE_BACKBONE": bool(true_scale_backbone), # Pass Backbone state
+    "TRUE_ATOMIC_SCALE": bool(true_atomic_scale), # Pass Backbone state
     "backboneStyle": backbone_style,         
     "manualSelection": st.session_state.manual_zoom  
 }
@@ -466,8 +467,7 @@ const ENABLE_SURF         = data.ENABLE_SURF;
 const SURF_OPACITY        = data.SURF_OPACITY;
 const BACKBONE_STYLE      = data.backboneStyle;
 const MANUAL_SELECTION    = data.manualSelection; 
-const TRUE_SCALE_PTM      = data.TRUE_SCALE_PTM; 
-const TRUE_SCALE_BACKBONE = data.TRUE_SCALE_BACKBONE; 
+const TRUE_ATOMIC_SCALE = data.TRUE_ATOMIC_SCALE;
 
 function addPtmStructuralReprs(comp, rn, ptm, opts) {
   if (!ptm) return;
@@ -481,8 +481,8 @@ function addPtmStructuralReprs(comp, rn, ptm, opts) {
   const mass     = ptm.mass || 0;
   const reprType = ptm.repr_type || "hyperball";
 
-  // Use 1.0 scale if TRUE_SCALE_PTM is on, otherwise fall back to stylistically scaled sizes
-  const stickScale = TRUE_SCALE_PTM ? 1.0 : (emphasize ? 0.65 : 0.32);
+  // Use 1.0 scale if TRUE_ATOMIC_SCALE is on, otherwise fall back to stylistically scaled sizes
+  const stickScale = TRUE_ATOMIC_SCALE ? 1.0 : (emphasize ? 0.65 : 0.32);
   const stickSele  = emphasize
     ? baseSele + " AND (sidechain OR .CA OR .CB OR .C OR .N OR .O)"
     : baseSele + " AND sidechain";
@@ -494,10 +494,10 @@ function addPtmStructuralReprs(comp, rn, ptm, opts) {
     opacity: 1.0
   });
 
-  const anchorScale  = TRUE_SCALE_PTM ? 1.0 : 0.45;
-  const pAnchorScale = TRUE_SCALE_PTM ? 1.0 : stickScale;
-  const sAnchorScale = TRUE_SCALE_PTM ? 1.0 : (emphasize ? 0.6 : 0.4);
-  const nAnchorScale = TRUE_SCALE_PTM ? 1.0 : (emphasize ? 0.55 : 0.35);
+const anchorScale  = TRUE_ATOMIC_SCALE ? 1.0 : 0.45;
+const pAnchorScale = TRUE_ATOMIC_SCALE ? 1.0 : stickScale;
+const sAnchorScale = TRUE_ATOMIC_SCALE ? 1.0 : (emphasize ? 0.60 : 0.40);
+const nAnchorScale = TRUE_ATOMIC_SCALE ? 1.0 : (emphasize ? 0.55 : 0.35);
 
   if (emphasize) {
     comp.addRepresentation("spacefill", {
@@ -536,7 +536,7 @@ function addBackboneRepr(comp, sele, color, opacity, opts) {
   opts = opts || {};
   if (BACKBONE_STYLE === "cpk") {
     // If True Scale Backbone is on, force a scale of 1.0 for the hyperball representation
-    const drawScale = TRUE_SCALE_BACKBONE ? 1.0 : (opts.cpkScale || 0.22);
+    const drawScale = TRUE_ATOMIC_SCALE ? 1.0 : (opts.cpkScale || 0.22);
     comp.addRepresentation("hyperball", {
       sele: sele,
       color: color,
