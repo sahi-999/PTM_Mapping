@@ -6,4 +6,4 @@ biopython
 numpy
 scipy
 py3Dmol
-
+matplotlib
