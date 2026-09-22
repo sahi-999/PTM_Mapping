@@ -15,6 +15,7 @@ import zipfile
 import json
 from Bio.PDB import PDBParser
 import re
+import streamlit.components.v1 as components
 
 # ==========================================
 # PAGE CONFIGURATION
@@ -183,17 +184,17 @@ def create_download_zip(protein_of_interest, pdb_str, peptide_data, residue_data
                 protein = row['Protein.Group']
                 stripped = row['Stripped.Sequence'] if row['Stripped.Sequence'] else 'NA'
                 
-                # Fetch dynamically instead of forcing exactly 2 columns
                 cond_names = list(conditions.keys())
                 c1_name = cond_names[0]
                 c2_name = cond_names[1] if len(cond_names) > 1 else c1_name
                 
+                # Dynamic PTM column detection by content
                 ptm_col_name = None
                 for col in row.index:
-                    if col.lower().replace(" ", "").replace(".", "") in ['ptm', 'modifiedsequence']:
+                    if pd.notna(row[col]) and isinstance(row[col], str) and 'unimod:' in row[col].lower():
                         ptm_col_name = col
                         break
-                ptm = row[ptm_col_name] if ptm_col_name and pd.notna(row[ptm_col_name]) else ''
+                ptm = row[ptm_col_name] if ptm_col_name else ''
                 
                 control = row[conditions[c1_name]] if conditions[c1_name] in row else 'NA'
                 disease = row[conditions[c2_name]] if conditions[c2_name] in row else 'NA'
@@ -507,7 +508,7 @@ def render_bidirectional_ngl_view(pdb_str, seq_len, protein_seq, plddt_list, con
     </script>
     """
     
-    st.iframe(html=custom_viewer_html, height=900)
+    components.html(custom_viewer_html, height=900)
 
 # ==========================================
 # MAIN APP UI 
@@ -532,7 +533,7 @@ html_content = """
     </style>
 </div>
 """
-st.iframe(html=html_content, height=100)
+components.html(html_content, height=100)
 
 st.markdown(
     """
@@ -597,12 +598,20 @@ if csv_file and fasta_file:
         st.error("No sequences found in FASTA file.")
         st.stop()
 
-    # Automatically identify flexible PTM column names
+    # Automatically identify flexible PTM column names by searching data for "unimod:"
     ptm_col_name = None
     for col in df.columns:
-        if col.lower().replace(" ", "").replace(".", "") in ['ptm', 'modifiedsequence']:
-            ptm_col_name = col
-            break
+        if df[col].dtype == 'object' or df[col].dtype == 'string':
+            sample = df[col].dropna().astype(str).head(30)
+            if any('unimod:' in val.lower() for val in sample):
+                ptm_col_name = col
+                break
+                
+    if not ptm_col_name:
+        for col in df.columns:
+            if col.lower().replace(" ", "").replace(".", "") in ['ptm', 'modifiedsequence']:
+                ptm_col_name = col
+                break
 
     if ptm_col_name:
         all_unimods = set()
@@ -617,7 +626,7 @@ if csv_file and fasta_file:
 
     # PTM selection
     if st.session_state.all_unimods:
-        st.markdown("### Detected PTM UniMod IDs")
+        st.markdown(f"### Detected PTM UniMod IDs (from column `{ptm_col_name}`)")
         if 'selected_unimods' not in st.session_state:
             st.session_state.selected_unimods = st.session_state.all_unimods.copy()
         selected_unimods = st.multiselect("Select UniMod IDs to Include", options=st.session_state.all_unimods, default=st.session_state.selected_unimods)
@@ -830,7 +839,7 @@ if csv_file and fasta_file:
                     buf.seek(0)
                     img_str = base64.b64encode(buf.getvalue()).decode()
                     plt.close(fig)
-                    st.iframe(html=f'<div style="display:flex; justify-content:center;"><img src="data:image/png;base64,{img_str}" style="width:100%; max-width:500px;"></div>', height=120)
+                    components.html(f'<div style="display:flex; justify-content:center;"><img src="data:image/png;base64,{img_str}" style="width:100%; max-width:500px;"></div>', height=120)
 
                 col_btn1, col_btn2 = st.columns(2)
                 with col_btn1:
