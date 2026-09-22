@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from Bio import SeqIO
-import py3Dmol
 import io
 import requests
 from matplotlib import colormaps
@@ -13,19 +12,19 @@ import base64
 import matplotlib.colors as mcolors
 from matplotlib.cm import ScalarMappable
 import zipfile
-from streamlit.components.v1 import html
-import json  # Keep only this import
+import json
 from Bio.PDB import PDBParser
 import re
-import time
+import streamlit.components.v1 as components
 
-# Set wide layout #
-
-# Page config
+# ==========================================
+# PAGE CONFIGURATION
+# ==========================================
 st.set_page_config(page_title="Peptide3D Mapper", page_icon="⚛️", layout="wide")
-#st.title("🧬 Peptide3D Mapper")
 
-# --- Helper Functions ---
+# ==========================================
+# HELPER FUNCTIONS
+# ==========================================
 def z_score(intensities):
     log_int = np.log10(intensities + 1)
     mean_log = np.mean(log_int)
@@ -33,23 +32,16 @@ def z_score(intensities):
     return np.zeros_like(log_int) if std_log == 0 else (log_int - mean_log) / std_log
 
 def clean_and_find_mods(peptide):
-    """
-    Cleans a peptide sequence and finds UniMod modification positions and types.
-    Returns:
-        cleaned_seq: sequence without UniMod tags
-        mod_list: list of tuples (0-based position, unimod_type)
-    """
     mod_list = []
     cleaned_seq = ""
-    index = -1  # Start at -1 to make position 0-based after first increment
+    index = -1
     pattern = re.compile(r"([A-Z])(\(UniMod:(\d+)\))?", re.IGNORECASE)
     for match in pattern.finditer(peptide):
         aa, mod, num = match.groups()
         index += 1
         cleaned_seq += aa
         if num:
-            mod_list.append((index, num))  # 0-based position
-    #st.write(f"Parsed PTM: {peptide} -> Cleaned: {cleaned_seq}, Mods: {mod_list}")  # Debug
+            mod_list.append((index, num))
     return cleaned_seq, mod_list
 
 def map_peptides_to_residues(df, protein_seq, intensity_col, overlap_strategy='merge', ptm_col=None, apply_tryptic=False):
@@ -62,36 +54,30 @@ def map_peptides_to_residues(df, protein_seq, intensity_col, overlap_strategy='m
     for idx, row in df.iterrows():
         pep = row['Stripped.Sequence']
         intensity = row[intensity_col]
-        # Skip if intensity is NaN, None, or 0
         if pd.isna(intensity) or intensity == 0:
             continue
-        # Find all occurrences of the peptide
         matches = list(re.finditer(re.escape(pep), protein_seq))
         if not matches:
             continue
         valid_found = False
         for match in matches:
             start = match.start()
-            # Apply tryptic rule if enabled
             if apply_tryptic and start > 0 and protein_seq[start - 1] not in 'KR':
                 continue
             valid_found = True
             end = start + len(pep)
-            # Intensity mapping
             peptide_match = peptides[peptides['Stripped.Sequence'] == pep]
             if peptide_match.empty:
-                continue  # Skip if no matching peptide found
-            pep_mean_intensity = peptide_match[intensity_col].values[0]
-            z_val = z_scores[peptide_match.index[0]]  # Use index to get corresponding z-score
+                continue
+            z_val = z_scores[peptide_match.index[0]]
             for i in range(start, end):
                 if residue_vals[i] is None:
                     residue_vals[i] = [z_val]
                 else:
                     residue_vals[i].append(z_val)
-            # PTM mapping (only if intensity is non-zero)
             if ptm_col and ptm_col in row:
                 ptm_seq = row[ptm_col]
-                if pd.notna(ptm_seq) and '(UniMod:' in ptm_seq:
+                if pd.notna(ptm_seq) and '(UniMod:' in str(ptm_seq):
                     cleaned_pep, mods = clean_and_find_mods(ptm_seq)
                     if cleaned_pep != pep:
                         continue
@@ -103,8 +89,7 @@ def map_peptides_to_residues(df, protein_seq, intensity_col, overlap_strategy='m
                             ptm_positions[unismod].add(abs_pos)
         if not valid_found:
             continue
-    
-    # Resolve overlaps for intensities
+            
     for i in range(seq_len):
         if residue_vals[i]:
             if overlap_strategy == 'merge':
@@ -117,11 +102,10 @@ def map_peptides_to_residues(df, protein_seq, intensity_col, overlap_strategy='m
                 residue_vals[i] = np.mean(residue_vals[i])
         else:
             residue_vals[i] = None
-    
-    # Convert PTM sets to lists
+            
     for k in ptm_positions:
         ptm_positions[k] = sorted(list(ptm_positions[k]))
-    
+        
     return residue_vals, ptm_positions
 
 def generate_colormap(residue_vals, cmap_name='autumn', not_mapped_color='#d3d3d3'):
@@ -149,7 +133,7 @@ def extract_plddt_and_model(pdb_str, protein_seq):
         if header_match:
             model_name = header_match.group(1).strip()
     else:
-        model_name = "AF-" + base_id + "-F1-model_v6" if 'base_id' in globals() else "AlphaFold Model"
+        model_name = "AlphaFold Model"
     for model in structure:
         for chain in model:
             for residue in chain:
@@ -158,7 +142,6 @@ def extract_plddt_and_model(pdb_str, protein_seq):
                     if 0 <= res_id < len(protein_seq):
                         b_factor = residue['CA'].get_bfactor()
                         plddt_list[res_id] = b_factor
-                    #st.write(f"PDB residue: {res_id}, chain: {chain.id}, pLDDT: {b_factor}")  # Debug
     valid_plddt = [v for v in plddt_list if v is not None]
     mean_plddt = np.mean(valid_plddt) if valid_plddt else None
     return plddt_list, model_name, mean_plddt
@@ -180,11 +163,10 @@ def create_download_zip(protein_of_interest, pdb_str, peptide_data, residue_data
                     norm = (residue_data[condition][i] - min_log) / (max_log - min_log) if max_log > min_log else 0.5
                     color_hex = mcolors.rgb2hex(cmap(norm)[:3])
                     pml_content += f"color {color_hex}, resi {i+1}\n"
-            # Add PTM spheres in PyMOL script
-
+            
             if ptm_data and ptm_data[condition] and isinstance(ptm_data[condition], dict):
                 for unismod, info in ptm_data[condition].items():
-                    if info['selected']:
+                    if isinstance(info, dict) and info.get('selected'):
                         color_hex = info['color']
                         for pos in info['positions']:
                             resi = pos + 1
@@ -194,35 +176,7 @@ def create_download_zip(protein_of_interest, pdb_str, peptide_data, residue_data
                             pml_content += f"color {color_hex}, ptm_{unismod}_{resi}\n"
             zipf.writestr(f"{protein_of_interest}_{condition}_pymol_script.pml", pml_content)
         
-        for condition in conditions:
-            fig_width = min(25, max(10, seq_len / 20))
-            fig, ax = plt.subplots(figsize=(fig_width, 1), dpi=600)
-            ax.add_patch(patches.Rectangle((0, 0), seq_len, 1, facecolor=not_mapped_color, edgecolor='none'))
-            min_log, max_log = min_max_logs[condition]
-            for i in range(seq_len):
-                if residue_data[condition][i] is not None:
-                    norm = (residue_data[condition][i] - min_log) / (max_log - min_log) if max_log > min_log else 0.5
-                    ax.add_patch(patches.Rectangle((i, 0), 1, 1, facecolor=cmap(norm)[:3], edgecolor='none'))
-            # --- Add PTM markers (overlay on linear plot) ---
-            if ptm_data and condition in ptm_data and isinstance(ptm_data[condition], dict):
-                for unimod, info in ptm_data[condition].items():
-                    if info.get('selected'):
-                        color_hex = info.get('color', '#ff0000')
-                        for pos in info.get('positions', []):
-                            ax.scatter(pos, 0.5, color=color_hex, s=60, edgecolors='black', linewidths=0.5, zorder=3)
-                            ax.text(pos, 0.55, unimod, rotation=0, fontsize=10, ha='center', va='bottom')
-            ax.set_xlim(0, seq_len)
-            ax.set_ylim(0, 1)
-            ax.set_yticks([])
-            ax.set_xlabel(f'Amino Acid Position ({condition})', fontsize=30)
-            ax.tick_params(axis='x', labelsize=15)
-            img_buffer = io.BytesIO()
-            plt.savefig(img_buffer, format='jpeg', dpi=600, bbox_inches='tight')
-            img_buffer.seek(0)
-            zipf.writestr(f"{protein_of_interest}_{condition}_linear.jpeg", img_buffer.read())
-            plt.close(fig)
-        
-        # Add PTM positions CSV (inspired by first code)
+        # Add PTM positions CSV
         if selected_df is not None and protein_seq is not None:
             ptm_rows = []
             for idx, row in selected_df.iterrows():
@@ -266,20 +220,6 @@ def create_download_zip(protein_of_interest, pdb_str, peptide_data, residue_data
                         ptm_rows.append([protein, stripped, control, disease, ptm, 'NA', 'NA', peptide_start, peptide_end])
                     if not valid_found:
                         ptm_rows.append([protein, stripped, control, disease, ptm, 'No valid tryptic position', 'NA', 'NA', 'NA'])
-
-                    else:
-                        matches = list(re.finditer(re.escape(stripped), protein_seq)) if stripped else []
-                        valid_found = False
-                        for match in matches:
-                            start = match.start()
-                            if apply_tryptic and start > 0 and protein_seq[start - 1] not in 'KR':
-                                continue
-                            valid_found = True
-                            peptide_start = start + 1
-                            peptide_end = start + len(stripped) if stripped else 'NA'
-                            ptm_rows.append([protein, stripped, control, disease, ptm, 'NA', 'NA', peptide_start, peptide_end])
-                        if not valid_found:
-                            ptm_rows.append([protein, stripped, control, disease, ptm, 'No valid tryptic position', 'NA', 'NA', 'NA'])
             
             ptm_df = pd.DataFrame(ptm_rows, columns=['Protein.Group', 'Stripped.Sequence', 'Control_Intensity', 'Disease_Intensity', 'PTM', 'PTM_position', 'UniMod_Type', 'Peptide_Start', 'Peptide_End'])
             ptm_csv = ptm_df.to_csv(index=False)
@@ -288,68 +228,21 @@ def create_download_zip(protein_of_interest, pdb_str, peptide_data, residue_data
     zip_buffer.seek(0)
     return zip_buffer
 
-def format_sequence_for_display(seq, residue_data, condition1_name, condition2_name, line_len=80, group=20):
-    mapped_positions = set(i for i, v in enumerate(residue_data[condition1_name]) if v is not None)
-    mapped_positions.update(i for i, v in enumerate(residue_data[condition2_name]) if v is not None)
-    mapped_js = json.dumps(list(mapped_positions))
-    lines = []
-    seq_len = len(seq)
-    for start in range(0, seq_len, line_len):
-        end = min(start + line_len, seq_len)
-        segment = seq[start:end]
-        num_line = "<div style='display: flex; align-items: flex-start; font-family: monospace; font-size: 10px; color: #888;'>"
-        seq_line = "<div style='display: flex; align-items: flex-start; font-family: monospace; font-size: 12px; line-height: 1.5;'>"
-        if start > 0:
-            num_line += f"<span style='position: relative;'><span style='margin-right: {group - 1}ch;'>{start}</span><span style='position: absolute; left: 0; right: 0; top: 100%; height: 10px; border-left: 1px dashed #888;'></span></span>"
-        for i in range(0, len(segment), group):
-            pos = start + i + 1
-            num_span = f"<span style='margin-right: {group - 1}ch;'>{pos}</span>" if i + group <= len(segment) else f"<span>{pos}</span>"
-            num_line += f"<span style='position: relative;'>{num_span}<span style='position: absolute; left: 0; right: 0; top: 100%; height: 10px; border-left: 1px dashed #888;'></span></span>"
-            seq_segment = segment[i:i + group]
-            segment_html = ""
-            for j, aa in enumerate(seq_segment):
-                abs_pos = start + i + j
-                style = "cursor:pointer;color:blue;" if abs_pos in mapped_positions else "color:gray;"
-                segment_html += f"<span class='aa' data-pos='{abs_pos}' style='{style}'>{aa}</span>"
-            seq_line += f"<span>{segment_html}</span>"
-        num_line += "</div>"
-        seq_line += f"<span style='margin-left: auto;'>{end}</span></div>"
-        lines.append(num_line + seq_line)
-    seq_html = "<div id='seq-panel' style='padding:10px; background:#fafafa; border-radius:6px; border:1px solid #ddd;'>" + "".join(lines) + "</div>"
-    return seq_html
-
-def sequence_copy_component(seq):
-    seq_escaped = seq.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    html = f"""
-    <div style="display:flex; gap:10px; align-items:center;">
-      <button id="copySeqBtn" style="padding:6px 10px; background:#2b8cff; color:white; border-radius:6px; border:none; cursor:pointer;">Copy sequence</button>
-      <span id="copyMsg" style="color:green; font-size:13px; display:none;">Copied!</span>
-    </div>
-    <pre id="seqText" style="display:none;">{seq_escaped}</pre>
-    <script>
-      const btn = document.getElementById('copySeqBtn');
-      const msg = document.getElementById('copyMsg');
-      btn.addEventListener('click', () => {{
-        const text = document.getElementById('seqText').innerText;
-        navigator.clipboard.writeText(text).then(() => {{
-          msg.style.display = 'inline';
-          setTimeout(() => msg.style.display = 'none', 1500);
-        }});
-      }});
-    </script>
-    """
-    return html
+# ==========================================
+# ADVANCED NGL 3D/1D RENDERER (THE FIX)
+# ==========================================
 def render_bidirectional_ngl_view(pdb_str, seq_len, protein_seq, plddt_list, model_name, mean_plddt, 
                                   cond1_name, cond2_name, zvals1, zvals2, colors1, colors2, 
                                   ptm_data1, ptm_data2, coverage1, coverage2, bg_color, 
                                   backbone_style, enable_surface, surface_opacity, manual_zoom):
 
     # Prep PTM dictionaries into simple residue-indexed arrays for JS
+    # Fixes the AttributeError Crash by enforcing isinstance(info, dict)
     def prep_ptm_map(ptm_data):
         arr = [None] * seq_len
         if ptm_data and isinstance(ptm_data, dict):
             for uid, info in ptm_data.items():
-                if info.get('selected'):
+                if isinstance(info, dict) and info.get('selected'):
                     for pos in info.get('positions', []):
                         if 0 <= pos < seq_len:
                             arr[pos] = {"name": info.get('label', uid), "color": info.get('color', '#ff0000')}
@@ -372,7 +265,7 @@ def render_bidirectional_ngl_view(pdb_str, seq_len, protein_seq, plddt_list, mod
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: system-ui, -apple-system, sans-serif; }
-        .ngl-container { display: flex; width: 100%; gap: 16px; }
+        .ngl-container { display: flex; width: 100%; gap: 16px; position: relative; }
         .col-panel { flex: 1; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
         
         .panel-header { font-size: 13px; font-weight: bold; color: #38bdf8; background: #0f172a; padding: 6px 10px; border-radius: 6px; border: 1px solid #1e293b; display: flex; justify-content: space-between; }
@@ -387,25 +280,30 @@ def render_bidirectional_ngl_view(pdb_str, seq_len, protein_seq, plddt_list, mod
 
         #hover-hud { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: rgba(15,23,42,0.95); padding: 10px 20px; border-radius: 8px; color: white; font-size: 13px; z-index: 9999; display: none; border: 1px solid #334155; box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.3); }
         .hud-val { font-weight: bold; margin-left: 4px; }
+        
+        #selection-badge { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); background: rgba(244, 63, 94, 0.9); color: white; padding: 6px 12px; border-radius: 6px; cursor: pointer; z-index: 999; display: none; font-weight: bold; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
     </style>
 
-    <div class="ngl-container">
-        <!-- CONDITION 1 PANEL -->
-        <div class="col-panel">
-            <div class="panel-header"><span>🔭 <span id="c1-name"></span></span> <span style="color:#94a3b8">Coverage: <span id="c1-cov"></span>%</span></div>
-            <div id="vp1_ov" class="viewport-ov"><div class="vp-label">Overview</div></div>
-            <div id="vp1_zm" class="viewport-zm"><div class="vp-label">Zoomed Inset</div></div>
-            <div id="seq1" class="seq-container"></div>
-        </div>
+    <div style="position:relative;">
+        <div id="selection-badge" onclick="clearSelection()">✕ Clear Selection</div>
+        <div class="ngl-container">
+            <!-- CONDITION 1 PANEL -->
+            <div class="col-panel">
+                <div class="panel-header"><span>🔭 <span id="c1-name"></span></span> <span style="color:#94a3b8">Coverage: <span id="c1-cov"></span>%</span></div>
+                <div id="vp1_ov" class="viewport-ov"><div class="vp-label">Overview</div></div>
+                <div id="vp1_zm" class="viewport-zm"><div class="vp-label">Zoomed Inset</div></div>
+                <div id="seq1" class="seq-container"></div>
+            </div>
 
-        <div class="divider"></div>
+            <div class="divider"></div>
 
-        <!-- CONDITION 2 PANEL -->
-        <div class="col-panel">
-            <div class="panel-header"><span>🔭 <span id="c2-name"></span></span> <span style="color:#94a3b8">Coverage: <span id="c2-cov"></span>%</span></div>
-            <div id="vp2_ov" class="viewport-ov"><div class="vp-label">Overview</div></div>
-            <div id="vp2_zm" class="viewport-zm"><div class="vp-label">Zoomed Inset</div></div>
-            <div id="seq2" class="seq-container"></div>
+            <!-- CONDITION 2 PANEL -->
+            <div class="col-panel">
+                <div class="panel-header"><span>🔭 <span id="c2-name"></span></span> <span style="color:#94a3b8">Coverage: <span id="c2-cov"></span>%</span></div>
+                <div id="vp2_ov" class="viewport-ov"><div class="vp-label">Overview</div></div>
+                <div id="vp2_zm" class="viewport-zm"><div class="vp-label">Zoomed Inset</div></div>
+                <div id="seq2" class="seq-container"></div>
+            </div>
         </div>
     </div>
 
@@ -447,11 +345,12 @@ def render_bidirectional_ngl_view(pdb_str, seq_len, protein_seq, plddt_list, mod
         st2_zm.viewer.controls.addEventListener("change", () => { if(!isSync_zm) { isSync_zm = true; st1_zm.viewer.setOrientation(st2_zm.viewer.getOrientation()); isSync_zm = false; }});
 
         // Register Z-score Schemes
+        // Fixes the NGL Javascript Crash by explicitly defining scheme labels
         const pairs1 = [], pairs2 = [];
         data.colors1.forEach((hex, i) => pairs1.push([hex, (i+1)+":A"]));
         data.colors2.forEach((hex, i) => pairs2.push([hex, (i+1)+":A"]));
-        const scheme1 = NGL.ColorMakerRegistry.addSelectionScheme(pairs1);
-        const scheme2 = NGL.ColorMakerRegistry.addSelectionScheme(pairs2);
+        const scheme1 = NGL.ColorMakerRegistry.addSelectionScheme(pairs1, "zscore_scheme1");
+        const scheme2 = NGL.ColorMakerRegistry.addSelectionScheme(pairs2, "zscore_scheme2");
 
         // Build 1D Sequence Grids
         function buildSeq(containerId, colors, ptmMap) {
@@ -460,7 +359,8 @@ def render_bidirectional_ngl_view(pdb_str, seq_len, protein_seq, plddt_list, mod
                 const span = document.createElement('span');
                 span.innerText = letter; span.className = 'aa-span'; span.dataset.rn = i + 1;
                 
-                if (colors[i] !== '#d3d3d3' && colors[i] !== data.bg_color) {
+                // Set sequence background color
+                if (colors[i].toLowerCase() !== '#d3d3d3' && colors[i] !== data.bg_color) {
                     span.style.backgroundColor = colors[i] + '40'; 
                     span.style.color = '#000';
                     span.style.fontWeight = 'bold';
@@ -569,6 +469,19 @@ def render_bidirectional_ngl_view(pdb_str, seq_len, protein_seq, plddt_list, mod
                     span.style.borderBottom = span.dataset.origBorder;
                 }
             });
+            document.getElementById("selection-badge").style.display = "block";
+        }
+
+        // Added missing Clear Selection JS Function
+        function clearSelection() {
+            selectedSeg = null;
+            applyReps();
+            c1_ov.autoView(1000); c2_ov.autoView(1000);
+            document.querySelectorAll('.aa-span').forEach(span => {
+                span.style.backgroundColor = span.dataset.origBg;
+                span.style.borderBottom = span.dataset.origBorder;
+            });
+            document.getElementById("selection-badge").style.display = "none";
         }
 
         function handlePick(proxy) {
@@ -576,9 +489,7 @@ def render_bidirectional_ngl_view(pdb_str, seq_len, protein_seq, plddt_list, mod
                 const atom = proxy.atom || proxy.bond.atom1;
                 if (atom && atom.resno) triggerSelect(atom.resno);
             } else {
-                selectedSeg = null; applyReps();
-                c1_ov.autoView(1000); c2_ov.autoView(1000);
-                document.querySelectorAll('.aa-span').forEach(s => { s.style.backgroundColor = s.dataset.origBg; s.style.borderBottom = s.dataset.origBorder; });
+                clearSelection();
             }
         }
         [st1_ov, st1_zm, st2_ov, st2_zm].forEach(st => st.signals.clicked.add(handlePick));
@@ -598,9 +509,12 @@ def render_bidirectional_ngl_view(pdb_str, seq_len, protein_seq, plddt_list, mod
         });
     </script>
     """
-    st.components.v1.html(custom_viewer_html, height=900)
-                                      
-# --- Main App UI ---
+    
+    components.html(custom_viewer_html, height=900)
+
+# ==========================================
+# MAIN APP UI 
+# ==========================================
 html_content = """
 <div style="position: relative; width: 100%; overflow: hidden; background-color: #1a1a2e; padding: 20px 0;">
     <h1 id="animated-title" style="font-family: 'Arial', sans-serif; font-size: 48px; color: #e94560; margin: 0; text-align: center; 
@@ -785,7 +699,6 @@ if csv_file and fasta_file:
     # PTM and tryptic options
     has_ptm = bool(st.session_state.all_unimods)
     ptm_checkbox_disabled = not has_ptm
-    # The 'key' parameter automatically syncs the checkbox with st.session_state.ptm_enabled
     st.checkbox(
         "Enable PTM Annotation", 
         disabled=ptm_checkbox_disabled, 
@@ -828,7 +741,6 @@ if csv_file and fasta_file:
             with col4:
                 overlap_strategy = st.selectbox("Overlap Strategy", ["none", "merge", "highest", "last"])
             
-            # PDB source selection with hyperlinks
             st.markdown(
                 f'<div style="text-align:left; margin-bottom:10px;">'
                 f'<span style="font-size:16px; color:#FFFFFF;">Databases: </span>'
@@ -904,7 +816,6 @@ if csv_file and fasta_file:
 
                 seq_len = len(protein_seq)
 
-                # Isoform handling
                 isoforms = df[df['Protein.Group'].str.contains(selected_protein + r'(?:-\d+)?$', regex=True)]['Protein.Group'].unique()
                 if len(isoforms) > 1 and combine_isoforms == "yes":
                     st.info("Isoforms Detected")
@@ -944,7 +855,6 @@ if csv_file and fasta_file:
                     peptides = selected_df.groupby('Stripped.Sequence')[intensity_col].mean().reset_index()
                     peptide_data[condition] = peptides
                 
-                # PTM configuration with hyperlinks
                 if st.session_state.ptm_enabled and st.session_state.selected_unimods:
                     st.subheader("PTM Configuration")
                     st.write(f"Selected UniMods: {st.session_state.selected_unimods}")
@@ -953,8 +863,6 @@ if csv_file and fasta_file:
                     else:
                         if 'ptm_configs' not in st.session_state or set(st.session_state.ptm_configs.keys()) != set(st.session_state.selected_unimods):
                             st.session_state.ptm_configs = {um: {'selected': True, 'label': f"{um}", 'color': "#3700FF"} for um in st.session_state.selected_unimods}
-                        # Debug to confirm selected UniMods
-                        st.write(f"Rendering PTM config for UniMods: {st.session_state.selected_unimods}")
                         for um in st.session_state.selected_unimods:
                             col_ptm1, col_ptm2, col_ptm3 = st.columns([1, 1, 1])
                             with col_ptm1:
@@ -987,13 +895,6 @@ if csv_file and fasta_file:
                 else:
                     ptm_data = {condition1_name: None, condition2_name: None}
                 
-                #st.subheader("Detected Sequence")
-                #st.markdown(f"**FASTA header:** {matched_header}")
-                #copy_html = sequence_copy_component(protein_seq)
-                #seq_html = format_sequence_for_display(protein_seq, residue_data, condition1_name, condition2_name, line_len=150, group=20)
-                #st.components.v1.html(copy_html + seq_html, height=320)
-                
-                # PDB fetching or upload
                 if st.session_state.pdb_source == "AlphaFold":
                     pdb_url = f"https://alphafold.ebi.ac.uk/files/AF-{base_id}-F1-model_v6.pdb"
                     with st.spinner(f"Attempting to fetch AlphaFold v6 structure for {base_id}..."):
@@ -1010,16 +911,15 @@ if csv_file and fasta_file:
                         except requests.exceptions.RequestException as e:
                             st.error(f"Failed to fetch PDB for {base_id}: {str(e)}.")
                             st.stop()
-                else:  # Upload PDB
+                else:  
                     if st.session_state.uploaded_pdb is None:
                         st.error("No PDB file uploaded.")
                         st.stop()
-                    # Validate filename
                     pdb_filename = st.session_state.uploaded_pdb.name
                     if not pdb_filename.endswith('.pdb'):
                         st.error("Uploaded file must have a .pdb extension.")
                         st.stop()
-                    filename_id = pdb_filename[:-4]  # Remove .pdb extension
+                    filename_id = pdb_filename[:-4]  
                     if filename_id != base_id:
                         st.error(f"PDB filename ({pdb_filename}) must match the selected protein's UniProt ID ({base_id}).")
                         st.stop()
@@ -1037,7 +937,6 @@ if csv_file and fasta_file:
                 cmap_options = ['autumn', 'viridis', 'plasma', 'inferno', 'magma', 'cividis']
                 selected_cmap = st.selectbox("Select Color Gradient", cmap_options, index=0)
                 selected_not_mapped_color = st.color_picker("Select Not Mapped Color", "#d3d3d3")
-
 
                 st.subheader("PhosphoSitePlus®")
                 try:
@@ -1065,7 +964,6 @@ if csv_file and fasta_file:
                         unsafe_allow_html=True
                     )
                 
-                
                 with st.container():
                     st.subheader("3D Structure Visualizations")
 
@@ -1076,7 +974,6 @@ if csv_file and fasta_file:
                         f'</div>',
                         unsafe_allow_html=True
                     )
-                    # Above "3D Structure Visualizations" header
                     alphafold_url = f"https://alphafold.ebi.ac.uk/search/text/{base_id}"
                     st.markdown(
                         f'<div style="text-align:right; margin-bottom:10px;">'
@@ -1084,6 +981,7 @@ if csv_file and fasta_file:
                         f'</div>',
                         unsafe_allow_html=True
                     )
+                    
                     # ===== NGL BIDIRECTIONAL SYNC INSERTION POINT =====
                     coverage1 = (sum(1 for v in residue_data[condition1_name] if v is not None) / seq_len * 100) if seq_len > 0 else 0
                     coverage2 = (sum(1 for v in residue_data[condition2_name] if v is not None) / seq_len * 100) if seq_len > 0 else 0
@@ -1174,17 +1072,16 @@ if csv_file and fasta_file:
                     """
                     st.components.v1.html(html_content, height=80)
 
-
                 col_btn1, col_btn2 = st.columns(2)
                 with col_btn1:
                     if st.button("Download Files (ZIP)", use_container_width=True):
                         zip_buffer = create_download_zip(selected_protein, pdb_str, peptide_data, residue_data, conditions, min_max_logs, seq_len, selected_cmap, selected_not_mapped_color, ptm_data 
                                                         if st.session_state.ptm_enabled 
-                                                            else None, selected_df 
+                                                        else None, selected_df 
                                                         if st.session_state.ptm_enabled 
-                                                            else None, protein_seq 
+                                                        else None, protein_seq 
                                                         if st.session_state.ptm_enabled 
-                                                            else None,st.session_state.apply_tryptic)
+                                                        else None,st.session_state.apply_tryptic)
                         st.download_button(
                             label="Download ZIP",
                             data=zip_buffer.getvalue(),
@@ -1193,7 +1090,7 @@ if csv_file and fasta_file:
                         )
                 with col_btn2:
                     if st.button("Reset & Re-Process", use_container_width=True):
-                        st.session_state.clear() # Clear all session state
+                        st.session_state.clear() 
                         st.session_state.conditions_confirmed = False
                         st.session_state.processed = False
                         st.session_state.selected_residue = None
