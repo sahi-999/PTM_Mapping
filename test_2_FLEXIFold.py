@@ -52,7 +52,7 @@ def clean_and_find_mods(peptide):
     #st.write(f"Parsed PTM: {peptide} -> Cleaned: {cleaned_seq}, Mods: {mod_list}")  # Debug
     return cleaned_seq, mod_list
 
-def map_peptides_to_residues(df, , intensity_col, overlap_strategy='merge', ptm_col=None, apply_tryptic=False):
+def map_peptides_to_residues(df, intensity_col, overlap_strategy='merge', ptm_col=None, apply_tryptic=False):
     seq_len = len()
     residue_vals = [None] * seq_len
     ptm_positions = {}
