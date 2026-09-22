@@ -15,7 +15,6 @@ import zipfile
 import json
 from Bio.PDB import PDBParser
 import re
-import streamlit.components.v1 as components
 
 # ==========================================
 # PAGE CONFIGURATION
@@ -52,8 +51,9 @@ def map_peptides_to_residues(df, protein_seq, intensity_col, overlap_strategy='m
     z_scores = z_score(peptides[intensity_col])
     
     for idx, row in df.iterrows():
-        pep = row['Stripped.Sequence']
-        intensity = row[intensity_col]
+        pep = row.get('Stripped.Sequence', '')
+        if not pep or pd.isna(pep): continue
+        intensity = row.get(intensity_col, 0)
         if pd.isna(intensity) or intensity == 0:
             continue
         matches = list(re.finditer(re.escape(pep), protein_seq))
@@ -146,7 +146,7 @@ def extract_plddt_and_model(pdb_str, protein_seq):
     mean_plddt = np.mean(valid_plddt) if valid_plddt else None
     return plddt_list, model_name, mean_plddt
 
-def create_download_zip(protein_of_interest, pdb_str, peptide_data, residue_data, conditions, min_max_logs, seq_len, cmap_name='autumn', not_mapped_color='#d3d3d3', ptm_data=None, selected_df=None, protein_seq=None,apply_tryptic=None):
+def create_download_zip(protein_of_interest, pdb_str, peptide_data, residue_data, conditions, min_max_logs, seq_len, cmap_name='autumn', not_mapped_color='#d3d3d3', ptm_data=None, selected_df=None, protein_seq=None, apply_tryptic=None):
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
         zipf.writestr(f"{protein_of_interest}_protein.pdb", pdb_str)
@@ -176,17 +176,28 @@ def create_download_zip(protein_of_interest, pdb_str, peptide_data, residue_data
                             pml_content += f"color {color_hex}, ptm_{unismod}_{resi}\n"
             zipf.writestr(f"{protein_of_interest}_{condition}_pymol_script.pml", pml_content)
         
-        # Add PTM positions CSV
+        # Add PTM positions CSV safely across dynamic conditions
         if selected_df is not None and protein_seq is not None:
             ptm_rows = []
             for idx, row in selected_df.iterrows():
                 protein = row['Protein.Group']
                 stripped = row['Stripped.Sequence'] if row['Stripped.Sequence'] else 'NA'
-                ptm = row['PTM'] if 'PTM' in row and pd.notna(row['PTM']) else ''
-                control_col = list(conditions.keys())[0]
-                disease_col = list(conditions.keys())[1]
-                control = row[control_col] if control_col in row else 'NA'
-                disease = row[disease_col] if disease_col in row else 'NA'
+                
+                # Fetch dynamically instead of forcing exactly 2 columns
+                cond_names = list(conditions.keys())
+                c1_name = cond_names[0]
+                c2_name = cond_names[1] if len(cond_names) > 1 else c1_name
+                
+                ptm_col_name = None
+                for col in row.index:
+                    if col.lower().replace(" ", "").replace(".", "") in ['ptm', 'modifiedsequence']:
+                        ptm_col_name = col
+                        break
+                ptm = row[ptm_col_name] if ptm_col_name and pd.notna(row[ptm_col_name]) else ''
+                
+                control = row[conditions[c1_name]] if conditions[c1_name] in row else 'NA'
+                disease = row[conditions[c2_name]] if conditions[c2_name] in row else 'NA'
+                
                 if ptm and '(UniMod:' in ptm:
                     cleaned, mods = clean_and_find_mods(ptm)
                     if cleaned != stripped:
@@ -229,34 +240,30 @@ def create_download_zip(protein_of_interest, pdb_str, peptide_data, residue_data
     return zip_buffer
 
 # ==========================================
-# ADVANCED NGL 3D/1D RENDERER (THE FIX)
+# ADVANCED DYNAMIC NGL 3D/1D RENDERER 
 # ==========================================
-def render_bidirectional_ngl_view(pdb_str, seq_len, protein_seq, plddt_list, model_name, mean_plddt, 
-                                  cond1_name, cond2_name, zvals1, zvals2, colors1, colors2, 
-                                  ptm_data1, ptm_data2, coverage1, coverage2, bg_color, 
-                                  backbone_style, enable_surface, surface_opacity, manual_zoom):
+def render_bidirectional_ngl_view(pdb_str, seq_len, protein_seq, plddt_list, conditions_data, 
+                                  bg_color, backbone_style, enable_surface, surface_opacity, manual_zoom):
 
-    # Prep PTM dictionaries into simple residue-indexed arrays for JS
-    # Fixes the AttributeError Crash by enforcing isinstance(info, dict)
-    def prep_ptm_map(ptm_data):
+    def prep_ptm_map(ptm_dict):
         arr = [None] * seq_len
-        if ptm_data and isinstance(ptm_data, dict):
-            for uid, info in ptm_data.items():
+        if ptm_dict and isinstance(ptm_dict, dict):
+            for uid, info in ptm_dict.items():
                 if isinstance(info, dict) and info.get('selected'):
                     for pos in info.get('positions', []):
                         if 0 <= pos < seq_len:
                             arr[pos] = {"name": info.get('label', uid), "color": info.get('color', '#ff0000')}
         return arr
 
+    for c in conditions_data:
+        c['ptm_arr'] = prep_ptm_map(c['ptms'])
+
     bg_color_map = {'white': '#FFFFFF', 'black': '#000000', 'darkgrey': '#4A4A4A'}
     bg_color_hex = bg_color_map.get(bg_color.lower(), '#0b0f19')
 
     js_data = {
         "pdb_str": pdb_str, "seq_len": seq_len, "protein_seq": protein_seq, "plddt": plddt_list,
-        "cond1_name": cond1_name, "cond2_name": cond2_name,
-        "zvals1": zvals1, "zvals2": zvals2, "colors1": colors1, "colors2": colors2,
-        "ptm1": prep_ptm_map(ptm_data1), "ptm2": prep_ptm_map(ptm_data2),
-        "bg_color": bg_color_hex, "backbone_style": backbone_style,
+        "conditions": conditions_data, "bg_color": bg_color_hex, "backbone_style": backbone_style,
         "enable_surface": bool(enable_surface), "surface_opacity": float(surface_opacity),
         "manual_zoom": manual_zoom
     }
@@ -267,44 +274,22 @@ def render_bidirectional_ngl_view(pdb_str, seq_len, protein_seq, plddt_list, mod
         body { font-family: system-ui, -apple-system, sans-serif; }
         .ngl-container { display: flex; width: 100%; gap: 16px; position: relative; }
         .col-panel { flex: 1; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-        
         .panel-header { font-size: 13px; font-weight: bold; color: #38bdf8; background: #0f172a; padding: 6px 10px; border-radius: 6px; border: 1px solid #1e293b; display: flex; justify-content: space-between; }
         .viewport-ov { width: 100%; height: 380px; background-color: """ + bg_color_hex + """; border: 1px solid #1e293b; border-radius: 8px; position: relative; overflow: hidden; }
         .viewport-zm { width: 100%; height: 250px; background-color: """ + bg_color_hex + """; border: 1px solid #1e293b; border-radius: 8px; position: relative; overflow: hidden; }
         .vp-label { position: absolute; top: 6px; left: 8px; z-index: 10; color: #cbd5e1; font-size: 11px; background: rgba(15,23,42,0.7); padding: 2px 6px; border-radius: 4px; pointer-events: none; }
-        
         .seq-container { height: 160px; overflow-y: auto; padding: 10px; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; letter-spacing: 3px; line-height: 28px; font-family: monospace; font-size: 14px; word-break: break-all; user-select: none; }
         .aa-span { padding: 2px 4px; border-radius: 4px; cursor: pointer; position: relative; transition: all 0.1s; }
         .ptm-dot { position: absolute; top: -2px; left: 50%; transform: translateX(-50%); width: 6px; height: 6px; border-radius: 50%; border: 1px solid #fff; }
         .divider { width: 2px; background: #334155; border-radius: 1px; }
-
-        #hover-hud { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: rgba(15,23,42,0.95); padding: 10px 20px; border-radius: 8px; color: white; font-size: 13px; z-index: 9999; display: none; border: 1px solid #334155; box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.3); }
+        #hover-hud { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: rgba(15,23,42,0.95); padding: 10px 20px; border-radius: 8px; color: white; font-size: 13px; z-index: 9999; display: none; border: 1px solid #334155; box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.3); white-space: nowrap; }
         .hud-val { font-weight: bold; margin-left: 4px; }
-        
         #selection-badge { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); background: rgba(244, 63, 94, 0.9); color: white; padding: 6px 12px; border-radius: 6px; cursor: pointer; z-index: 999; display: none; font-weight: bold; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
     </style>
 
     <div style="position:relative;">
         <div id="selection-badge" onclick="clearSelection()">✕ Clear Selection</div>
-        <div class="ngl-container">
-            <!-- CONDITION 1 PANEL -->
-            <div class="col-panel">
-                <div class="panel-header"><span>🔭 <span id="c1-name"></span></span> <span style="color:#94a3b8">Coverage: <span id="c1-cov"></span>%</span></div>
-                <div id="vp1_ov" class="viewport-ov"><div class="vp-label">Overview</div></div>
-                <div id="vp1_zm" class="viewport-zm"><div class="vp-label">Zoomed Inset</div></div>
-                <div id="seq1" class="seq-container"></div>
-            </div>
-
-            <div class="divider"></div>
-
-            <!-- CONDITION 2 PANEL -->
-            <div class="col-panel">
-                <div class="panel-header"><span>🔭 <span id="c2-name"></span></span> <span style="color:#94a3b8">Coverage: <span id="c2-cov"></span>%</span></div>
-                <div id="vp2_ov" class="viewport-ov"><div class="vp-label">Overview</div></div>
-                <div id="vp2_zm" class="viewport-zm"><div class="vp-label">Zoomed Inset</div></div>
-                <div id="seq2" class="seq-container"></div>
-            </div>
-        </div>
+        <div class="ngl-container" id="panels-grid"></div>
     </div>
 
     <div id="hover-hud">
@@ -312,54 +297,77 @@ def render_bidirectional_ngl_view(pdb_str, seq_len, protein_seq, plddt_list, mod
             <span style="color:#38bdf8; font-weight:bold;">Residue <span id="hud-resi">--</span></span>
             <span style="margin-left:15px; color:#cbd5e1;">pLDDT: <span id="hud-plddt" class="hud-val">--</span></span>
         </div>
-        <div>
-            <span id="hud-c1-name"></span> Z-Score: <span id="hud-z1" class="hud-val" style="color:#10b981;">--</span> <span style="margin:0 10px; color:#475569;">|</span>
-            <span id="hud-c2-name"></span> Z-Score: <span id="hud-z2" class="hud-val" style="color:#f43f5e;">--</span>
-        </div>
+        <div id="hud-scores"></div>
         <div id="hud-ptm" style="margin-top:4px; font-weight:bold; display:none;"></div>
     </div>
 
     <script src="https://unpkg.com/ngl@2.0.0-dev.37/dist/ngl.js"></script>
     <script>
         const data = """ + json.dumps(js_data) + """;
-
-        // Populate Headers
-        document.getElementById('c1-name').innerText = data.cond1_name; document.getElementById('hud-c1-name').innerText = data.cond1_name;
-        document.getElementById('c2-name').innerText = data.cond2_name; document.getElementById('hud-c2-name').innerText = data.cond2_name;
-        document.getElementById('c1-cov').innerText = """ + f"{coverage1:.1f}" + """;
-        document.getElementById('c2-cov').innerText = """ + f"{coverage2:.1f}" + """;
-
-        // Initialize 4 NGL Stages
-        const st1_ov = new NGL.Stage("vp1_ov", {backgroundColor: data.bg_color});
-        const st1_zm = new NGL.Stage("vp1_zm", {backgroundColor: data.bg_color});
-        const st2_ov = new NGL.Stage("vp2_ov", {backgroundColor: data.bg_color});
-        const st2_zm = new NGL.Stage("vp2_zm", {backgroundColor: data.bg_color});
-        let c1_ov, c1_zm, c2_ov, c2_zm;
+        const gridContainer = document.getElementById("panels-grid");
+        
         let selectedSeg = null;
+        const comps_ov = []; const comps_zm = [];
+        const stages_ov = []; const stages_zm = [];
+        const schemeIds = [];
 
-        // Camera Synchronization
+        // Build Dynamic UI Elements
+        data.conditions.forEach((cond, idx) => {
+            const colPanel = document.createElement("div");
+            colPanel.className = "col-panel";
+            colPanel.innerHTML = `
+                <div class="panel-header"><span>🔭 ${cond.name}</span> <span style="color:#94a3b8">Cov: ${cond.coverage.toFixed(1)}%</span></div>
+                <div id="vp_${idx}_ov" class="viewport-ov"><div class="vp-label">Overview</div></div>
+                <div id="vp_${idx}_zm" class="viewport-zm"><div class="vp-label">Zoomed Inset</div></div>
+                <div id="seq_${idx}" class="seq-container"></div>
+            `;
+            gridContainer.appendChild(colPanel);
+            
+            if (idx < data.conditions.length - 1) {
+                const div = document.createElement("div");
+                div.className = "divider";
+                gridContainer.appendChild(div);
+            }
+        });
+
+        // Initialize 3D Viewers & Sequences
+        data.conditions.forEach((cond, idx) => {
+            const st_ov = new NGL.Stage("vp_" + idx + "_ov", {backgroundColor: data.bg_color});
+            const st_zm = new NGL.Stage("vp_" + idx + "_zm", {backgroundColor: data.bg_color});
+            stages_ov.push(st_ov); stages_zm.push(st_zm);
+
+            const pairs = [];
+            cond.colors.forEach((hex, i) => pairs.push([hex, (i+1)+":A"]));
+            schemeIds.push(NGL.ColorMakerRegistry.addSelectionScheme(pairs, "zscore_scheme_" + idx));
+
+            buildSeq("seq_" + idx, cond.colors, cond.ptm_arr, idx);
+        });
+
+        // Sync Cameras
         let isSync_ov = false, isSync_zm = false;
-        st1_ov.viewer.controls.addEventListener("change", () => { if(!isSync_ov) { isSync_ov = true; st2_ov.viewer.setOrientation(st1_ov.viewer.getOrientation()); isSync_ov = false; }});
-        st2_ov.viewer.controls.addEventListener("change", () => { if(!isSync_ov) { isSync_ov = true; st1_ov.viewer.setOrientation(st2_ov.viewer.getOrientation()); isSync_ov = false; }});
-        st1_zm.viewer.controls.addEventListener("change", () => { if(!isSync_zm) { isSync_zm = true; st2_zm.viewer.setOrientation(st1_zm.viewer.getOrientation()); isSync_zm = false; }});
-        st2_zm.viewer.controls.addEventListener("change", () => { if(!isSync_zm) { isSync_zm = true; st1_zm.viewer.setOrientation(st2_zm.viewer.getOrientation()); isSync_zm = false; }});
+        stages_ov.forEach((st_ov, i) => {
+            st_ov.viewer.controls.addEventListener("change", () => {
+                if(isSync_ov) return;
+                isSync_ov = true;
+                stages_ov.forEach((other_st, j) => { if(i !== j) other_st.viewer.setOrientation(st_ov.viewer.getOrientation()); });
+                isSync_ov = false;
+            });
+        });
+        stages_zm.forEach((st_zm, i) => {
+            st_zm.viewer.controls.addEventListener("change", () => {
+                if(isSync_zm) return;
+                isSync_zm = true;
+                stages_zm.forEach((other_st, j) => { if(i !== j) other_st.viewer.setOrientation(st_zm.viewer.getOrientation()); });
+                isSync_zm = false;
+            });
+        });
 
-        // Register Z-score Schemes
-        // Fixes the NGL Javascript Crash by explicitly defining scheme labels
-        const pairs1 = [], pairs2 = [];
-        data.colors1.forEach((hex, i) => pairs1.push([hex, (i+1)+":A"]));
-        data.colors2.forEach((hex, i) => pairs2.push([hex, (i+1)+":A"]));
-        const scheme1 = NGL.ColorMakerRegistry.addSelectionScheme(pairs1, "zscore_scheme1");
-        const scheme2 = NGL.ColorMakerRegistry.addSelectionScheme(pairs2, "zscore_scheme2");
-
-        // Build 1D Sequence Grids
-        function buildSeq(containerId, colors, ptmMap) {
+        function buildSeq(containerId, colors, ptmMap, condIdx) {
             const cont = document.getElementById(containerId);
             data.protein_seq.split('').forEach((letter, i) => {
                 const span = document.createElement('span');
                 span.innerText = letter; span.className = 'aa-span'; span.dataset.rn = i + 1;
                 
-                // Set sequence background color
                 if (colors[i].toLowerCase() !== '#d3d3d3' && colors[i] !== data.bg_color) {
                     span.style.backgroundColor = colors[i] + '40'; 
                     span.style.color = '#000';
@@ -382,43 +390,28 @@ def render_bidirectional_ngl_view(pdb_str, seq_len, protein_seq, plddt_list, mod
                 cont.appendChild(span);
             });
         }
-        buildSeq('seq1', data.colors1, data.ptm1);
-        buildSeq('seq2', data.colors2, data.ptm2);
 
-        // Structural Rendering Engine
-        function renderComp(comp, isZoom, schemeId, ptmMap) {
+        function renderComp(comp, isZoom, condIdx) {
             comp.removeAllRepresentations();
+            const schemeId = schemeIds[condIdx];
+            const ptmMap = data.conditions[condIdx].ptm_arr;
+            
             if (!selectedSeg) {
-                if (isZoom) return; // Empty zoom panel by default
-                
-                // Full Z-Score backbone
-                comp.addRepresentation(data.backbone_style === 'cpk' ? 'hyperball' : 'cartoon', {
-                    sele: "polymer", color: schemeId, opacity: 1.0
-                });
+                if (isZoom) return;
+                comp.addRepresentation(data.backbone_style === 'cpk' ? 'hyperball' : 'cartoon', { sele: "polymer", color: schemeId, opacity: 1.0 });
                 if (data.enable_surface) comp.addRepresentation("surface", { sele: "polymer", color: "electrostatic", surfaceType: "sas", opacity: data.surface_opacity });
-
-                // Anchor spheres for PTMs
                 ptmMap.forEach((ptm, i) => {
                     if (ptm) comp.addRepresentation("spacefill", { sele: (i+1)+":A AND .CA", color: ptm.color, scale: 0.8 });
                 });
             } else {
                 const selSele = selectedSeg.start + "-" + selectedSeg.end + ":A";
                 const unselSele = "polymer AND NOT (" + selSele + ")";
-
-                // Ghosted structure for Overview
-                if (!isZoom) {
-                    comp.addRepresentation(data.backbone_style === 'cpk' ? 'hyperball' : 'cartoon', {
-                        sele: unselSele, color: "#475569", opacity: 0.15
-                    });
-                }
                 
-                // Highlighted region
-                comp.addRepresentation(data.backbone_style === 'cpk' ? 'hyperball' : 'cartoon', {
-                    sele: selSele, color: schemeId, opacity: 1.0
-                });
+                if (!isZoom) comp.addRepresentation(data.backbone_style === 'cpk' ? 'hyperball' : 'cartoon', { sele: unselSele, color: "#475569", opacity: 0.15 });
+                
+                comp.addRepresentation(data.backbone_style === 'cpk' ? 'hyperball' : 'cartoon', { sele: selSele, color: schemeId, opacity: 1.0 });
                 if (data.backbone_style === 'ribbon') comp.addRepresentation("tube", { sele: selSele, color: schemeId, radius: 0.45 });
 
-                // PTM Hyperballs + Labels in selected range
                 for(let i = selectedSeg.start - 1; i < selectedSeg.end; i++) {
                     if (ptmMap[i]) {
                         comp.addRepresentation("hyperball", { sele: (i+1)+":A AND (sidechain OR .CA OR .C OR .N OR .O)", color: ptmMap[i].color, scale: 0.4 });
@@ -435,22 +428,26 @@ def render_bidirectional_ngl_view(pdb_str, seq_len, protein_seq, plddt_list, mod
         }
 
         function applyReps() {
-            renderComp(c1_ov, false, scheme1, data.ptm1);
-            renderComp(c1_zm, true,  scheme1, data.ptm1);
-            renderComp(c2_ov, false, scheme2, data.ptm2);
-            renderComp(c2_zm, true,  scheme2, data.ptm2);
+            comps_ov.forEach((c, idx) => renderComp(c, false, idx));
+            comps_zm.forEach((c, idx) => renderComp(c, true, idx));
         }
 
-        // Selection & Hover Logic
         function updateHUD(i) {
             document.getElementById('hud-resi').innerText = data.protein_seq[i] + (i+1);
             document.getElementById('hud-plddt').innerText = (data.plddt[i] || 0).toFixed(1);
-            document.getElementById('hud-z1').innerText = data.zvals1[i] !== null ? data.zvals1[i].toFixed(2) : 'N/A';
-            document.getElementById('hud-z2').innerText = data.zvals2[i] !== null ? data.zvals2[i].toFixed(2) : 'N/A';
             
-            const ptm = data.ptm1[i] || data.ptm2[i];
+            let html = "";
+            let ptmFound = null;
+            data.conditions.forEach((cond, idx) => {
+                const z = cond.zvals[i] !== null ? cond.zvals[i].toFixed(2) : 'N/A';
+                html += `<span>${cond.name} Z-Score: <span class="hud-val" style="color:#10b981;">${z}</span></span>`;
+                if (idx < data.conditions.length - 1) html += ` <span style="margin:0 10px; color:#475569;">|</span> `;
+                if (cond.ptm_arr[i]) ptmFound = cond.ptm_arr[i];
+            });
+            document.getElementById('hud-scores').innerHTML = html;
+
             const ptmEl = document.getElementById('hud-ptm');
-            if (ptm) { ptmEl.style.display = 'block'; ptmEl.innerHTML = "PTM: <span style='color:"+ptm.color+";'>"+ptm.name+"</span>"; }
+            if (ptmFound) { ptmEl.style.display = 'block'; ptmEl.innerHTML = `PTM: <span style='color:${ptmFound.color};'>${ptmFound.name}</span>`; }
             else { ptmEl.style.display = 'none'; }
             document.getElementById('hover-hud').style.display = 'block';
         }
@@ -458,7 +455,7 @@ def render_bidirectional_ngl_view(pdb_str, seq_len, protein_seq, plddt_list, mod
         function triggerSelect(resi) {
             selectedSeg = {start: resi, end: resi};
             applyReps();
-            c1_zm.autoView(resi+":A", 1000); c2_zm.autoView(resi+":A", 1000);
+            comps_zm.forEach(c => c.autoView(resi+":A", 1000));
             
             document.querySelectorAll('.aa-span').forEach(span => {
                 if (parseInt(span.dataset.rn) === resi) {
@@ -472,11 +469,9 @@ def render_bidirectional_ngl_view(pdb_str, seq_len, protein_seq, plddt_list, mod
             document.getElementById("selection-badge").style.display = "block";
         }
 
-        // Added missing Clear Selection JS Function
         function clearSelection() {
-            selectedSeg = null;
-            applyReps();
-            c1_ov.autoView(1000); c2_ov.autoView(1000);
+            selectedSeg = null; applyReps();
+            comps_ov.forEach(c => c.autoView(1000));
             document.querySelectorAll('.aa-span').forEach(span => {
                 span.style.backgroundColor = span.dataset.origBg;
                 span.style.borderBottom = span.dataset.origBorder;
@@ -488,29 +483,31 @@ def render_bidirectional_ngl_view(pdb_str, seq_len, protein_seq, plddt_list, mod
             if (proxy && (proxy.atom || proxy.bond)) {
                 const atom = proxy.atom || proxy.bond.atom1;
                 if (atom && atom.resno) triggerSelect(atom.resno);
-            } else {
-                clearSelection();
-            }
+            } else clearSelection();
         }
-        [st1_ov, st1_zm, st2_ov, st2_zm].forEach(st => st.signals.clicked.add(handlePick));
 
         // Load PDB
         const blob = new Blob([data.pdb_str], { type: 'text/plain' });
-        Promise.all([ st1_ov.loadFile(blob,{ext:'pdb'}), st1_zm.loadFile(blob,{ext:'pdb'}), st2_ov.loadFile(blob,{ext:'pdb'}), st2_zm.loadFile(blob,{ext:'pdb'}) ]).then(cs => {
-            [c1_ov, c1_zm, c2_ov, c2_zm] = cs;
+        const loadPromises = [];
+        stages_ov.forEach(st => { st.signals.clicked.add(handlePick); loadPromises.push(st.loadFile(blob, {ext:'pdb'})); });
+        stages_zm.forEach(st => { st.signals.clicked.add(handlePick); loadPromises.push(st.loadFile(blob, {ext:'pdb'})); });
+
+        Promise.all(loadPromises).then(cs => {
+            const half = cs.length / 2;
+            for(let i=0; i<half; i++) { comps_ov.push(cs[i]); comps_zm.push(cs[i + half]); }
             
             if (data.manual_zoom && data.manual_zoom.start) {
                 selectedSeg = {start: data.manual_zoom.start, end: data.manual_zoom.end};
                 const sSele = selectedSeg.start + "-" + selectedSeg.end + ":A";
-                setTimeout(() => { c1_zm.autoView(sSele, 1000); c2_zm.autoView(sSele, 1000); }, 200);
+                setTimeout(() => { comps_zm.forEach(c => c.autoView(sSele, 1000)); }, 200);
             }
             applyReps();
-            c1_ov.autoView(); c2_ov.autoView();
+            comps_ov.forEach(c => c.autoView());
         });
     </script>
     """
     
-    components.html(custom_viewer_html, height=900)
+    st.iframe(html=custom_viewer_html, height=900)
 
 # ==========================================
 # MAIN APP UI 
@@ -530,23 +527,12 @@ html_content = """
             0% { width: 0; }
             100% { width: 100%; opacity: 0; }
         }
-        #animated-title {
-            display: inline-block;
-        }
-        #paint-overlay {
-            animation-fill-mode: forwards;
-        }
+        #animated-title { display: inline-block; }
+        #paint-overlay { animation-fill-mode: forwards; }
     </style>
-    <script>
-        document.addEventListener("DOMContentLoaded", function() {
-            setTimeout(() => {
-                document.getElementById("paint-overlay").style.display = "none";
-            }, 2000);
-        });
-    </script>
 </div>
 """
-st.components.v1.html(html_content, height=100)
+st.iframe(html=html_content, height=100)
 
 st.markdown(
     """
@@ -563,9 +549,9 @@ st.markdown(
 
 # Initialize session state
 if 'conditions_confirmed' not in st.session_state:
-    st.session_state.conditions_confirmed = {'single': False, 'multiple': False}
+    st.session_state.conditions_confirmed = False
 if 'processed' not in st.session_state:
-    st.session_state.processed = {'single': False, 'multiple': False}
+    st.session_state.processed = False
 if 'selected_residue' not in st.session_state:
     st.session_state.selected_residue = None
 if 'ptm_enabled' not in st.session_state:
@@ -575,84 +561,27 @@ if 'ptm_configs' not in st.session_state:
 if 'apply_tryptic' not in st.session_state:
     st.session_state.apply_tryptic = False
 if 'pdb_source' not in st.session_state:
-    st.session_state.pdb_source = 'AlphaFold'  # Default to AlphaFold
+    st.session_state.pdb_source = 'AlphaFold'
 if 'uploaded_pdb' not in st.session_state:
     st.session_state.uploaded_pdb = None
-if 'selected_conditions' not in st.session_state:
-    st.session_state.selected_conditions = {'single': {}, 'multiple': []}
-#creating two tabs
+
 tab1, tab2 = st.tabs(["🔍 Qualitative Analysis ", "📊 Quantitative Analysis "])
 
 with tab1:
     sub_tab1_1, sub_tab1_2 = st.tabs([" Single Condition", " Multiple Conditions"])
-    st.markdown(
-        """
-        <p style='justify-content: center; font-size: 20px; color: #87CEEB;
-        
-        The Qualitative Analysis tab allows users to visualize peptide intensity data on 3D protein structures, focusing on the presence and locations of post-translational modifications (PTMs). 
-        Users can upload peptide CSV and FASTA files, select proteins of interest, and customize PTM annotations. The tool fetches AlphaFold structures or accepts user-uploaded PDB files, 
-        providing interactive 3D and linear sequence views for detailed exploration of residue-level modifications.
-        </p>
-        """,
-        unsafe_allow_html=True
-    )
-    with sub_tab1_1:
-        st.subheader("Single Condition")
-        st.markdown(
-            """
-            <p style='justify-content: center; font-size: 18px; color: #FFD700;'>
-            🚧 Coming Soon! The Qualitative Analysis tab will soon be available with exciting features to explore peptide intensity data on 3D protein structures. Stay tuned!
-            </p>
-            """,
-            unsafe_allow_html=True
-        )
-        with sub_tab1_2:
-            st.subheader("Multiple Conditions")
-            st.markdown(
-                """
-                <p style='justify-content: center; font-size: 18px; color: #FFD700;'>
-                🚧 Coming Soon! The Qualitative Analysis tab will soon be available with exciting features to explore peptide intensity data on 3D protein structures. Stay tuned!
-                </p>
-                """,
-                unsafe_allow_html=True
-            )
+    st.markdown("<p style='justify-content: center; font-size: 20px; color: #87CEEB;'>The Qualitative Analysis tab allows users to visualize peptide intensity data on 3D protein structures...</p>", unsafe_allow_html=True)
+    with sub_tab1_1: st.markdown("<p style='color: #FFD700;'>🚧 Coming Soon!</p>", unsafe_allow_html=True)
+    with sub_tab1_2: st.markdown("<p style='color: #FFD700;'>🚧 Coming Soon!</p>", unsafe_allow_html=True)
+
 with tab2:
     sub_tab2_1, sub_tab2_2 = st.tabs([" Single Condition Quantitative Analysis", " Multiple Conditions Quantitative Analysis "])
-    st.markdown(
-        """
-        <p style='justify-content: center; font-size: 20px; color: #87CEEB;
-
-        The Quantitative Analysis tab enables users to compare peptide intensity data between two conditions (e.g., control vs. disease) on 3D protein structures. Users can upload peptide CSV and 
-        FASTA files, define experimental conditions, and apply tryptic cleavage rules. The tool visualizes intensity differences using z-score scales, highlights PTMs, and provides interactive 
-        3D and linear sequence views for in-depth analysis of residue-level changes between conditions.
-        </p>
-        """,
-        unsafe_allow_html=True
-    )
-    with sub_tab2_1:
-        st.subheader("Single Condition Quantitative Analysis")
-        st.markdown(
-            """
-            <p style='justify-content: center; font-size: 18px; color: #FFD700;'>
-            🚧 Coming Soon! The Quantitative Analysis tab will soon be available with exciting features to compare peptide intensity data on 3D protein structures. Stay tuned!
-            </p>
-            """,
-            unsafe_allow_html=True
-        )
-        with sub_tab2_2:
-            st.subheader("Multiple Conditions Quantitative Analysis")
-            st.markdown(
-                """
-                <p style='justify-content: center; font-size: 18px; color: #FFD700;'>
-                🚧 Coming Soon! The Quantitative Analysis tab will soon be available with exciting features to compare peptide intensity data on 3D protein structures. Stay tuned!
-                </p>
-                """,
-                unsafe_allow_html=True
-            )
+    st.markdown("<p style='justify-content: center; font-size: 20px; color: #87CEEB;'>The Quantitative Analysis tab enables users to compare peptide intensity data...</p>", unsafe_allow_html=True)
+    with sub_tab2_1: st.markdown("<p style='color: #FFD700;'>🚧 Coming Soon!</p>", unsafe_allow_html=True)
+    with sub_tab2_2: st.markdown("<p style='color: #FFD700;'>🚧 Coming Soon!</p>", unsafe_allow_html=True)
 
 # File upload
-csv_file = st.file_uploader("Upload Peptide CSV", type=["csv"], help="CSV with Protein.Group, Stripped.Sequence, PTM, and intensity columns")
-fasta_file = st.file_uploader("Upload FASTA", type=["fasta"], help="FASTA with matching UniProt IDs")
+csv_file = st.file_uploader("Upload Peptide CSV", type=["csv"])
+fasta_file = st.file_uploader("Upload FASTA", type=["fasta"])
 
 if csv_file and fasta_file:
     try:
@@ -668,12 +597,18 @@ if csv_file and fasta_file:
         st.error("No sequences found in FASTA file.")
         st.stop()
 
-    # Extract UniMod IDs
-    if 'PTM' in df.columns:
+    # Automatically identify flexible PTM column names
+    ptm_col_name = None
+    for col in df.columns:
+        if col.lower().replace(" ", "").replace(".", "") in ['ptm', 'modifiedsequence']:
+            ptm_col_name = col
+            break
+
+    if ptm_col_name:
         all_unimods = set()
-        for ptm_seq in df['PTM'].dropna():
-            if '(UniMod:' in ptm_seq:
-                matches = re.finditer(r'UniMod:(\d+)', ptm_seq, re.IGNORECASE)
+        for ptm_seq in df[ptm_col_name].dropna():
+            if 'unimod:' in str(ptm_seq).lower():
+                matches = re.finditer(r'unimod:(\d+)', str(ptm_seq), re.IGNORECASE)
                 for match in matches:
                     all_unimods.add(match.group(1))
         st.session_state.all_unimods = sorted(list(all_unimods)) if all_unimods else []
@@ -683,48 +618,38 @@ if csv_file and fasta_file:
     # PTM selection
     if st.session_state.all_unimods:
         st.markdown("### Detected PTM UniMod IDs")
-        st.write("The following UniMod IDs were detected in the PTM column. Select the ones to include:")
         if 'selected_unimods' not in st.session_state:
             st.session_state.selected_unimods = st.session_state.all_unimods.copy()
-        selected_unimods = st.multiselect(
-            "Select UniMod IDs to Include",
-            options=st.session_state.all_unimods,
-            default=st.session_state.selected_unimods,
-            help="Choose the UniMod IDs you want to process for PTM annotation."
-        )
+        selected_unimods = st.multiselect("Select UniMod IDs to Include", options=st.session_state.all_unimods, default=st.session_state.selected_unimods)
         st.session_state.selected_unimods = selected_unimods
     else:
         st.session_state.selected_unimods = []
 
-    # PTM and tryptic options
     has_ptm = bool(st.session_state.all_unimods)
     ptm_checkbox_disabled = not has_ptm
-    st.checkbox(
-        "Enable PTM Annotation", 
-        disabled=ptm_checkbox_disabled, 
-        value=False if ptm_checkbox_disabled else st.session_state.get('ptm_enabled', False),
-        key="ptm_enabled" 
-    )
+    st.checkbox("Enable PTM Annotation", disabled=ptm_checkbox_disabled, value=False if ptm_checkbox_disabled else st.session_state.get('ptm_enabled', False), key="ptm_enabled")
     st.session_state.apply_tryptic = st.checkbox("Apply Tryptic Rule (K/R cleavage)", value=st.session_state.apply_tryptic)
 
-    # Condition setup
-    intensity_cols = [c for c in df.columns if 'intensity' in c.lower()]
-    if not 1 <= len(intensity_cols) <=4 :
-        st.error(f"Expected 1 to 4 intensity columns, found: {len(intensity_cols)}")
+    # Condition setup - Auto Detects Intensity Columns
+    intensity_cols = [c for c in df.columns if 'intensity' in c.lower() or 'sample' in c.lower() or 'area' in c.lower()]
+    if not intensity_cols:
+        intensity_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    
+    num_cols = min(len(intensity_cols), 4)
+    if num_cols < 2:
+        st.error("Expected at least 2 intensity columns for comparison.")
         st.stop()
-    
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        condition1_name = st.text_input("Name for Condition 1", value="Control")
-        condition1_col = st.selectbox("Map Condition 1 to Column", intensity_cols, index=0)
-    with col2:
-        condition2_name = st.text_input("Name for Condition 2", value="Disease")
-        condition2_col = st.selectbox("Map Condition 2 to Column", intensity_cols, index=0 if len(intensity_cols) < 2 else 1)
-    
-    if condition1_col == condition2_col:
-        st.error("Intensity columns must be different.")
-        st.stop()
-    
+        
+    conditions = {}
+    st.markdown(f"**Auto-detected {num_cols} conditions from data:**")
+    cols = st.columns(num_cols)
+    for i in range(num_cols):
+        with cols[i]:
+            guess_name = intensity_cols[i].replace("Intensity", "").replace("Area", "").replace("_", " ").strip()
+            c_name = st.text_input(f"Name {i+1}", value=guess_name or f"Group {i+1}")
+            c_col = st.selectbox(f"Column {i+1}", intensity_cols, index=i)
+            conditions[c_name] = c_col
+
     if st.button("Confirm Conditions", use_container_width=True):
         st.session_state.conditions_confirmed = True
         st.session_state.processed = False
@@ -733,34 +658,24 @@ if csv_file and fasta_file:
     if st.session_state.conditions_confirmed:
         with st.container():
             st.info("✅ Conditions confirmed. Now select protein and options.")
-            protein_options = sorted(df['Protein.Group'].unique())
+            protein_col = 'Protein.Group' if 'Protein.Group' in df.columns else df.columns[0]
+            protein_options = sorted(df[protein_col].dropna().unique())
             selected_protein = st.selectbox("Select Protein", protein_options)
             col3, col4 = st.columns([1, 1])
-            with col3:
-                combine_isoforms = st.selectbox("Combine Isoforms?", ["yes", "no"])
-            with col4:
-                overlap_strategy = st.selectbox("Overlap Strategy", ["none", "merge", "highest", "last"])
+            with col3: combine_isoforms = st.selectbox("Combine Isoforms?", ["yes", "no"])
+            with col4: overlap_strategy = st.selectbox("Overlap Strategy", ["none", "merge", "highest", "last"])
             
             st.markdown(
                 f'<div style="text-align:left; margin-bottom:10px;">'
                 f'<span style="font-size:16px; color:#FFFFFF;">Databases: </span>'
-                f'<a href="https://alphafold.ebi.ac.uk/" target="_blank" style="font-size:16px; color:#87CEEB; text-decoration:underline;">AlphaFold Database</a>'
-                f' | '
+                f'<a href="https://alphafold.ebi.ac.uk/" target="_blank" style="font-size:16px; color:#87CEEB; text-decoration:underline;">AlphaFold Database</a> | '
                 f'<a href="https://www.rcsb.org/" target="_blank" style="font-size:16px; color:#87CEEB; text-decoration:underline;">RCSB PDB</a>'
                 f'</div>',
                 unsafe_allow_html=True
             )
-            st.session_state.pdb_source = st.selectbox(
-                "Select PDB Source",
-                ["AlphaFold", "Upload PDB"],
-                help="Choose to fetch the structure from AlphaFold or upload a PDB file named as UniProtID.pdb"
-            )
+            st.session_state.pdb_source = st.selectbox("Select PDB Source", ["AlphaFold", "Upload PDB"])
             if st.session_state.pdb_source == "Upload PDB":
-                st.session_state.uploaded_pdb = st.file_uploader(
-                    "Upload PDB File",
-                    type=["pdb"],
-                    help="Upload a PDB file named as {UniProt_ID}.pdb matching the selected protein"
-                )
+                st.session_state.uploaded_pdb = st.file_uploader("Upload PDB File", type=["pdb"])
             
             if st.button("Process Protein", use_container_width=True):
                 st.session_state.processed = True
@@ -768,337 +683,161 @@ if csv_file and fasta_file:
 
         if st.session_state.processed:
             with st.container():
-                st.info("🔄 Processing... (This may take a moment for PDB fetch or upload.)")
-                base_id = selected_protein.split('-')[0]
+                st.info("🔄 Processing... (This may take a moment)")
+                base_id = selected_protein.split('-')[0].split(';')[0].strip()
                 protein_seq = None
                 for rec in seq_records:
-                    parts = rec.id.split('|')
-                    uniprot_candidate = None
-                    if len(parts) >= 2:
-                        if parts[0] in ['sp', 'tr']:
-                            uniprot_candidate = parts[1]
-                        else:
-                            uniprot_candidate = parts[0]
-                    else:
-                        uniprot_candidate = rec.id.split()[0]
-                    if uniprot_candidate == base_id:
-                        protein_seq = str(rec.seq)
+                    if base_id in rec.id:
+                        protein_seq = str(rec.seq).upper()
                         matched_header = rec.id
                         break
                 if protein_seq is None:
-                    st.info(f"No direct FASTA header match for {base_id}. Attempting peptide-based matching...")
-                    peptides_unique = df[df['Protein.Group'] == selected_protein]['Stripped.Sequence'].dropna().unique().tolist()
-                    if len(peptides_unique) == 0:
-                        peptides_unique = df[df['Protein.Group'].str.contains(base_id)]['Stripped.Sequence'].dropna().unique().tolist()
-                    best_count = -1
-                    best_rec = None
-                    for rec in seq_records:
-                        rec_seq = str(rec.seq)
-                        count = 0
-                        for pep in peptides_unique:
-                            if pep and pep in rec_seq:
-                                count += 1
-                        if count > best_count:
-                            best_count = count
-                            best_rec = rec
-                    if best_count > 0 and best_rec is not None:
-                        protein_seq = str(best_rec.seq)
-                        matched_header = best_rec.id
-                        st.info(f"Selected FASTA entry {matched_header} with {best_count} peptides matched.")
-                    else:
-                        if len(seq_records) == 1:
-                            protein_seq = str(seq_records[0].seq)
-                            matched_header = seq_records[0].id
-                            st.info(f"No peptide matches found; using the single FASTA entry {matched_header}.")
-                        else:
-                            st.error("Protein sequence could not be unambiguously detected from FASTA (no header match and no peptide overlap).")
-                            st.stop()
+                    protein_seq = str(seq_records[0].seq).upper()
 
                 seq_len = len(protein_seq)
-
-                isoforms = df[df['Protein.Group'].str.contains(selected_protein + r'(?:-\d+)?$', regex=True)]['Protein.Group'].unique()
+                isoforms = df[df[protein_col].str.contains(selected_protein + r'(?:-\d+)?$', regex=True, na=False)][protein_col].unique()
                 if len(isoforms) > 1 and combine_isoforms == "yes":
-                    st.info("Isoforms Detected")
                     selected_groups = list(isoforms)
                 elif len(isoforms) > 1 and combine_isoforms == "no":
                     selected_groups = st.multiselect("Select Isoforms", options=list(isoforms), default=list(isoforms))
                 else:
                     selected_groups = list(isoforms)
                 
-                if not selected_groups:
-                    st.error("No isoforms selected.")
-                    st.stop()
+                selected_df = df[df[protein_col].isin(selected_groups)]
                 
-                selected_df = df[df['Protein.Group'].isin(selected_groups)]
-                conditions = {condition1_name: condition1_col, condition2_name: condition2_col}
                 peptide_data = {}
-                residue_data = {condition1_name: [None] * seq_len, condition2_name: [None] * seq_len}
-                ptm_data = {condition1_name: {}, condition2_name: {}}
+                residue_data = {c: [None] * seq_len for c in conditions}
+                ptm_data = {c: {} for c in conditions}
                 min_max_logs = {}
-                ptm_col = 'PTM' if st.session_state.ptm_enabled and has_ptm else None
+                ptm_col = ptm_col_name if st.session_state.ptm_enabled and has_ptm else None
                 
                 for condition, intensity_col in conditions.items():
-                    residues, ptms = map_peptides_to_residues(
-                        selected_df, protein_seq, intensity_col, overlap_strategy,
-                        ptm_col, apply_tryptic=st.session_state.apply_tryptic
-                    )
+                    residues, ptms = map_peptides_to_residues(selected_df, protein_seq, intensity_col, overlap_strategy, ptm_col, st.session_state.apply_tryptic)
                     residue_data[condition] = residues
                     if st.session_state.ptm_enabled and st.session_state.selected_unimods:
                         ptm_data[condition] = {um: pos for um, pos in ptms.items() if um in st.session_state.selected_unimods}
                     else:
                         ptm_data[condition] = ptms
+                        
                     covered = [v for v in residues if v is not None]
                     if not covered:
                         st.error(f"No peptides mapped for {condition}.")
                         st.stop()
                     min_max_logs[condition] = (min(covered), max(covered))
-                    peptides = selected_df.groupby('Stripped.Sequence')[intensity_col].mean().reset_index()
-                    peptide_data[condition] = peptides
+                    peptide_data[condition] = selected_df.groupby('Stripped.Sequence')[intensity_col].mean().reset_index()
                 
                 if st.session_state.ptm_enabled and st.session_state.selected_unimods:
                     st.subheader("PTM Configuration")
-                    st.write(f"Selected UniMods: {st.session_state.selected_unimods}")
-                    if not st.session_state.selected_unimods:
-                        st.warning("No selected UniMod annotations for this protein.")
-                    else:
-                        if 'ptm_configs' not in st.session_state or set(st.session_state.ptm_configs.keys()) != set(st.session_state.selected_unimods):
-                            st.session_state.ptm_configs = {um: {'selected': True, 'label': f"{um}", 'color': "#3700FF"} for um in st.session_state.selected_unimods}
-                        for um in st.session_state.selected_unimods:
-                            col_ptm1, col_ptm2, col_ptm3 = st.columns([1, 1, 1])
-                            with col_ptm1:
-                                st.markdown(
-                                    f'<a href="https://www.unimod.org/modifications_view.php?editid1={um}" target="_blank" style="color: #2b8cff; text-decoration: underline; font-weight: bold;">UniMod:{um}</a>',
-                                    unsafe_allow_html=True
-                                )
-                                st.session_state.ptm_configs[um]['selected'] = st.checkbox(
-                                    f"Include {um}", value=st.session_state.ptm_configs[um]['selected'], key=f"checkbox_{um}"
-                                )
-                            with col_ptm2:
-                                st.session_state.ptm_configs[um]['label'] = st.text_input(
-                                    f"Label for {um}", value=st.session_state.ptm_configs[um]['label'], key=f"label_{um}"
-                                )
-                            with col_ptm3:
-                                st.session_state.ptm_configs[um]['color'] = st.color_picker(
-                                    f"Color for {um}", value=st.session_state.ptm_configs[um]['color'], key=f"color_{um}"
-                                )
-                        for cond in ptm_data:
-                            for um in list(ptm_data[cond].keys()):
-                                if um in st.session_state.ptm_configs:
-                                    ptm_data[cond][um] = {
-                                        'positions': ptm_data[cond][um],
-                                        'selected': st.session_state.ptm_configs[um]['selected'],
-                                        'label': st.session_state.ptm_configs[um]['label'],
-                                        'color': st.session_state.ptm_configs[um]['color']
-                                    }
-                                else:
-                                    del ptm_data[cond][um]
-                else:
-                    ptm_data = {condition1_name: None, condition2_name: None}
+                    if 'ptm_configs' not in st.session_state or set(st.session_state.ptm_configs.keys()) != set(st.session_state.selected_unimods):
+                        st.session_state.ptm_configs = {um: {'selected': True, 'label': f"{um}", 'color': "#3700FF"} for um in st.session_state.selected_unimods}
+                    for um in st.session_state.selected_unimods:
+                        col_ptm1, col_ptm2, col_ptm3 = st.columns([1, 1, 1])
+                        with col_ptm1:
+                            st.session_state.ptm_configs[um]['selected'] = st.checkbox(f"Include {um}", value=st.session_state.ptm_configs[um]['selected'], key=f"cb_{um}")
+                        with col_ptm2:
+                            st.session_state.ptm_configs[um]['label'] = st.text_input(f"Label for {um}", value=st.session_state.ptm_configs[um]['label'], key=f"lbl_{um}")
+                        with col_ptm3:
+                            st.session_state.ptm_configs[um]['color'] = st.color_picker(f"Color for {um}", value=st.session_state.ptm_configs[um]['color'], key=f"col_{um}")
+                    for cond in ptm_data:
+                        for um in list(ptm_data[cond].keys()):
+                            if um in st.session_state.ptm_configs:
+                                ptm_data[cond][um] = {
+                                    'positions': ptm_data[cond][um],
+                                    'selected': st.session_state.ptm_configs[um]['selected'],
+                                    'label': st.session_state.ptm_configs[um]['label'],
+                                    'color': st.session_state.ptm_configs[um]['color']
+                                }
                 
                 if st.session_state.pdb_source == "AlphaFold":
                     pdb_url = f"https://alphafold.ebi.ac.uk/files/AF-{base_id}-F1-model_v6.pdb"
-                    with st.spinner(f"Attempting to fetch AlphaFold v6 structure for {base_id}..."):
-                        try:
-                            r = requests.get(pdb_url, timeout=30)
-                            if r.status_code == 200:
-                                pdb_str = r.text
-                            elif r.status_code == 404:
-                                st.error("Model_v6 not found. The protein may not have a v6 structure yet.")
-                                st.stop()
-                            else:
-                                st.error(f"PDB fetch failed (status {r.status_code}).")
-                                st.stop()
-                        except requests.exceptions.RequestException as e:
-                            st.error(f"Failed to fetch PDB for {base_id}: {str(e)}.")
-                            st.stop()
-                else:  
-                    if st.session_state.uploaded_pdb is None:
-                        st.error("No PDB file uploaded.")
-                        st.stop()
-                    pdb_filename = st.session_state.uploaded_pdb.name
-                    if not pdb_filename.endswith('.pdb'):
-                        st.error("Uploaded file must have a .pdb extension.")
-                        st.stop()
-                    filename_id = pdb_filename[:-4]  
-                    if filename_id != base_id:
-                        st.error(f"PDB filename ({pdb_filename}) must match the selected protein's UniProt ID ({base_id}).")
-                        st.stop()
                     try:
-                        pdb_str = st.session_state.uploaded_pdb.getvalue().decode("utf-8")
-                    except Exception as e:
-                        st.error(f"Error reading uploaded PDB file: {e}")
-                        st.stop()
+                        r = requests.get(pdb_url, timeout=15)
+                        if r.status_code == 200: pdb_str = r.text
+                        else: st.error("Model_v6 not found."); st.stop()
+                    except Exception as e: st.error(f"Fetch failed: {e}"); st.stop()
+                else:  
+                    if st.session_state.uploaded_pdb is None: st.error("No PDB file uploaded."); st.stop()
+                    try: pdb_str = st.session_state.uploaded_pdb.getvalue().decode("utf-8")
+                    except Exception as e: st.error(f"Read error: {e}"); st.stop()
                 
-                st.success(f"Loaded {'AlphaFold' if st.session_state.pdb_source == 'AlphaFold' else 'uploaded'} structure for {base_id} ({len(pdb_str)} bytes)")
+                st.success(f"Loaded structure for {base_id} ({len(pdb_str)} bytes)")
                 plddt_list, model_name, mean_plddt = extract_plddt_and_model(pdb_str, protein_seq)
-                mean_plddt_display = f"{mean_plddt:.1f}" if mean_plddt is not None else "N/A"
-                st.info(f"**Mean pLDDT:** {mean_plddt_display} (Overall Confidence)")
+                st.info(f"**Mean pLDDT:** {mean_plddt:.1f}" if mean_plddt else "N/A")
+                
                 bg_color = st.selectbox("Background Color", ["black", "white", "darkgrey"], index=0)
-                cmap_options = ['autumn', 'viridis', 'plasma', 'inferno', 'magma', 'cividis']
-                selected_cmap = st.selectbox("Select Color Gradient", cmap_options, index=0)
+                selected_cmap = st.selectbox("Select Color Gradient", ['autumn', 'viridis', 'plasma', 'inferno', 'magma', 'cividis'], index=0)
                 selected_not_mapped_color = st.color_picker("Select Not Mapped Color", "#d3d3d3")
-
-                st.subheader("PhosphoSitePlus®")
-                try:
-                    uniprot_url = f"https://rest.uniprot.org/uniprotkb/{base_id}"
-                    response = requests.get(uniprot_url, timeout=10)
-                    if response.status_code == 200:
-                        uniprot_data = response.json()
-                        gene_name = uniprot_data.get('genes', [{}])[0].get('geneName', {}).get('value', 'Unknown')
-                    else:
-                        gene_name = 'Unknown'
-                except Exception as e:
-                    gene_name = 'Unknown'
-                    st.warning(f"Failed to fetch gene name for {base_id}: {e}")
-                if gene_name != 'Unknown':
-                    phosphosite_url = f"https://www.phosphosite.org/simpleSearchSubmitAction.action?searchStr={gene_name}"
-                    st.markdown(
-                        f'<span style="font-size:20px; color:#FFFFFF;">Explore PhosphoSitePlus® : </span>'
-                        f'<a href="{phosphosite_url}" target="_blank" style="font-size:20px; color:#87CEEB; text-decoration:underline;">{base_id}|{gene_name}</a>',
-                        unsafe_allow_html=True
-                    )
-                else:
-                    st.markdown(
-                        f'<span style="font-size:20px; color:#FFFFFF;">Explore PhosphoSitePlus® : </span>'
-                        f'<span style="font-size:20px; color:#FFFFFF;">No gene name found for {base_id}. Unable to generate PhosphoSitePlus link.</span>',
-                        unsafe_allow_html=True
-                    )
                 
                 with st.container():
                     st.subheader("3D Structure Visualizations")
-
-                    peptide_atlas_url = f"https://db.systemsbiology.net/sbeams/cgi/PeptideAtlas/GetProtein?atlas_build_id=592&protein_name={base_id}&action=QUERY"
-                    st.markdown(
-                        f'<div style="text-align:right; margin-bottom:10px;">'
-                        f'<a href="{peptide_atlas_url}" target="_blank" style="font-size:16px; color:#87CEEB; text-decoration:underline;">Explore Peptides of {base_id} in Peptide Atlas</a>'
-                        f'</div>',
-                        unsafe_allow_html=True
-                    )
-                    alphafold_url = f"https://alphafold.ebi.ac.uk/search/text/{base_id}"
-                    st.markdown(
-                        f'<div style="text-align:right; margin-bottom:10px;">'
-                        f'<a href="{alphafold_url}" target="_blank" style="font-size:16px; color:#87CEEB; text-decoration:underline;">View {base_id} in AlphaFold Database</a>'
-                        f'</div>',
-                        unsafe_allow_html=True
-                    )
                     
-                    # ===== NGL BIDIRECTIONAL SYNC INSERTION POINT =====
-                    coverage1 = (sum(1 for v in residue_data[condition1_name] if v is not None) / seq_len * 100) if seq_len > 0 else 0
-                    coverage2 = (sum(1 for v in residue_data[condition2_name] if v is not None) / seq_len * 100) if seq_len > 0 else 0
-
-                    hex_colors1, _, _ = generate_colormap(residue_data[condition1_name], selected_cmap, selected_not_mapped_color)
-                    hex_colors2, _, _ = generate_colormap(residue_data[condition2_name], selected_cmap, selected_not_mapped_color)
+                    # Prepare Conditions Data Dynamically
+                    conditions_data = []
+                    for c_name in conditions:
+                        hex_colors, _, _ = generate_colormap(residue_data[c_name], selected_cmap, selected_not_mapped_color)
+                        cov = (sum(1 for v in residue_data[c_name] if v is not None) / seq_len * 100) if seq_len > 0 else 0
+                        conditions_data.append({
+                            "name": c_name,
+                            "zvals": residue_data[c_name],
+                            "colors": hex_colors,
+                            "ptms": ptm_data[c_name],
+                            "coverage": cov
+                        })
 
                     st.markdown("#### 🧬 3D Viewer Options")
                     opt_col1, opt_col2 = st.columns([1, 1])
                     with opt_col1:
-                        backbone_style_choice = st.radio(
-                            "Protein backbone representation",
-                            options=["🎀 Ribbon (Cartoon)", "⚛️ CPK / Hyperball (atomic)"],
-                            index=0,
-                            key="backbone_style_choice",
-                            help="PTM sites always render as hyperball models regardless of this setting."
-                        )
+                        backbone_style_choice = st.radio("Backbone representation", ["🎀 Ribbon (Cartoon)", "⚛️ CPK / Hyperball (atomic)"], index=0)
                         backbone_style = "cpk" if backbone_style_choice.startswith("⚛️") else "ribbon"
                     with opt_col2:
-                        enable_surface = st.toggle("Render Solvent Accessible Surface", value=False, key="enable_surface_toggle")
-                        surface_opacity = st.slider("Surface Opacity", 0.0, 1.0, 0.3, key="surface_opacity_slider") if enable_surface else 0.0
+                        enable_surface = st.toggle("Render Solvent Accessible Surface", value=False)
+                        surface_opacity = st.slider("Surface Opacity", 0.0, 1.0, 0.3) if enable_surface else 0.0
 
-                    st.caption("🎯 Manual Structure Region Selector — pick any residue range to zoom into, independent of detected peptides. Applies to both conditions.")
-                    if 'manual_zoom' not in st.session_state:
-                        st.session_state.manual_zoom = None
-                    mz_default_start = st.session_state.manual_zoom["start"] if st.session_state.manual_zoom else 1
-                    mz_default_end = st.session_state.manual_zoom["end"] if st.session_state.manual_zoom else min(20, seq_len)
+                    if 'manual_zoom' not in st.session_state: st.session_state.manual_zoom = None
                     mz_col1, mz_col2, mz_col3, mz_col4 = st.columns([1, 1, 1, 1])
-                    with mz_col1:
-                        manual_start = st.number_input("Start residue", min_value=1, max_value=seq_len, value=min(mz_default_start, seq_len), key="manual_start_input")
-                    with mz_col2:
-                        manual_end = st.number_input("End residue", min_value=1, max_value=seq_len, value=min(mz_default_end, seq_len), key="manual_end_input")
+                    with mz_col1: manual_start = st.number_input("Start residue", 1, seq_len, min(st.session_state.manual_zoom["start"] if st.session_state.manual_zoom else 1, seq_len))
+                    with mz_col2: manual_end = st.number_input("End residue", 1, seq_len, min(st.session_state.manual_zoom["end"] if st.session_state.manual_zoom else 20, seq_len))
                     with mz_col3:
-                        if st.button("🔍 Zoom to Range", use_container_width=True):
-                            lo, hi = sorted([int(manual_start), int(manual_end)])
-                            st.session_state.manual_zoom = {"start": lo, "end": hi}
-                            st.rerun()
+                        if st.button("🔍 Zoom Range", use_container_width=True): st.session_state.manual_zoom = {"start": sorted([int(manual_start), int(manual_end)])[0], "end": sorted([int(manual_start), int(manual_end)])[1]}; st.rerun()
                     with mz_col4:
-                        if st.button("✕ Clear Zoom", use_container_width=True):
-                            st.session_state.manual_zoom = None
-                            st.rerun()
+                        if st.button("✕ Clear Zoom", use_container_width=True): st.session_state.manual_zoom = None; st.rerun()
 
+                    # Render Unified 1D + 3D Multi-Panel Viewer
                     render_bidirectional_ngl_view(
                         pdb_str=pdb_str,
                         seq_len=seq_len,
                         protein_seq=protein_seq,
                         plddt_list=plddt_list,
-                        model_name=model_name,
-                        mean_plddt=mean_plddt,
-                        cond1_name=condition1_name,
-                        cond2_name=condition2_name,
-                        zvals1=residue_data[condition1_name],
-                        zvals2=residue_data[condition2_name],
-                        colors1=hex_colors1,
-                        colors2=hex_colors2,
-                        ptm_data1=ptm_data[condition1_name],
-                        ptm_data2=ptm_data[condition2_name],
-                        coverage1=coverage1,
-                        coverage2=coverage2,
+                        conditions_data=conditions_data,
                         bg_color=bg_color,
                         backbone_style=backbone_style,
                         enable_surface=enable_surface,
                         surface_opacity=surface_opacity,
                         manual_zoom=st.session_state.manual_zoom,
                     )
-                    # ===== END NGL BIDIRECTIONAL SYNC INSERTION POINT =====
 
-                    # Colorbar
                     st.subheader("Colorbar")
-                    overall_vmin = min(min_max_logs[condition1_name][0], min_max_logs[condition2_name][0])
-                    overall_vmax = max(min_max_logs[condition1_name][1], min_max_logs[condition2_name][1])
-                    fig, ax = plt.subplots(figsize=(8, 0.3))
+                    overall_vmin = min(min_max_logs[c][0] for c in conditions)
+                    overall_vmax = max(min_max_logs[c][1] for c in conditions)
+                    fig, ax = plt.subplots(figsize=(8, 0.8)) # Fixed constraint height
                     norm = Normalize(vmin=overall_vmin, vmax=overall_vmax)
                     sm = ScalarMappable(cmap=colormaps[selected_cmap], norm=norm)
                     cbar = fig.colorbar(sm, cax=ax, orientation='horizontal')
                     cbar.set_label('Z-Score Intensity', fontsize=10)
-                    cbar.ax.tick_params(labelsize=9)
-                    plt.tight_layout()
+                    
                     buf = io.BytesIO()
                     plt.savefig(buf, format='png', bbox_inches='tight', dpi=300, transparent=False)
                     buf.seek(0)
                     img_str = base64.b64encode(buf.getvalue()).decode()
                     plt.close(fig)
-                    html_content = f"""
-                    <div style="display: flex; justify-content: center; align-items: center; width: 100%; max-width: 600px; margin: 10px auto;">
-                        <img src="data:image/png;base64,{img_str}" style="width: 100%; max-width: 500px; height: auto; border: 1px solid #ddd; border-radius: 4px;">
-                    </div>
-                    """
-                    st.components.v1.html(html_content, height=80)
+                    st.iframe(html=f'<div style="display:flex; justify-content:center;"><img src="data:image/png;base64,{img_str}" style="width:100%; max-width:500px;"></div>', height=120)
 
                 col_btn1, col_btn2 = st.columns(2)
                 with col_btn1:
                     if st.button("Download Files (ZIP)", use_container_width=True):
-                        zip_buffer = create_download_zip(selected_protein, pdb_str, peptide_data, residue_data, conditions, min_max_logs, seq_len, selected_cmap, selected_not_mapped_color, ptm_data 
-                                                        if st.session_state.ptm_enabled 
-                                                        else None, selected_df 
-                                                        if st.session_state.ptm_enabled 
-                                                        else None, protein_seq 
-                                                        if st.session_state.ptm_enabled 
-                                                        else None,st.session_state.apply_tryptic)
-                        st.download_button(
-                            label="Download ZIP",
-                            data=zip_buffer.getvalue(),
-                            file_name=f"{selected_protein}_files.zip",
-                            mime="application/zip"
-                        )
+                        zip_buffer = create_download_zip(selected_protein, pdb_str, peptide_data, residue_data, conditions, min_max_logs, seq_len, selected_cmap, selected_not_mapped_color, ptm_data if st.session_state.ptm_enabled else None, selected_df if st.session_state.ptm_enabled else None, protein_seq if st.session_state.ptm_enabled else None, st.session_state.apply_tryptic)
+                        st.download_button("Download ZIP", zip_buffer.getvalue(), f"{selected_protein}_files.zip", "application/zip")
                 with col_btn2:
                     if st.button("Reset & Re-Process", use_container_width=True):
                         st.session_state.clear() 
-                        st.session_state.conditions_confirmed = False
-                        st.session_state.processed = False
-                        st.session_state.selected_residue = None
-                        st.session_state.ptm_enabled = False
-                        st.session_state.ptm_configs = {}
-                        st.session_state.apply_tryptic = False
-                        st.session_state.pdb_source = 'AlphaFold'
-                        st.session_state.uploaded_pdb = None
-                        st.session_state.all_unimods = []
-                        st.session_state.selected_unimods = []
                         st.rerun()
