@@ -164,7 +164,7 @@ def extract_plddt_and_model(pdb_str, ):
     return plddt_list, model_name, mean_plddt
 
 # In render_linear_plot function
-def render_linear_plot(residue_vals, title, seq_len, vmin, vmax, , model_name, plddt_list, mean_plddt,
+def render_linear_plot(residue_vals, title, seq_len, vmin, vmax, model_name, plddt_list, mean_plddt,
                        cmap_name='viridis', not_mapped_color='#BEFDF9', highlight_residues=[], ptm_data=None):
     hex_colors, _, _ = generate_colormap(residue_vals, cmap_name, not_mapped_color)
     mapped = [i for i, v in enumerate(residue_vals) if v is not None]
