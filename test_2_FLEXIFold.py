@@ -898,7 +898,6 @@ if csv_file and fasta_file:
             with st.container():
                 st.info("🔄 Processing... (This may take a moment for PDB fetch or upload.)")
                 base_id = selected_protein.split('-')[0]
-                 = None
                 for rec in seq_records:
                     parts = rec.id.split('|')
                     uniprot_candidate = None
