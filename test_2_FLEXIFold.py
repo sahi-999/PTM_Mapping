@@ -163,312 +163,6 @@ def extract_plddt_and_model(pdb_str, protein_seq):
     mean_plddt = np.mean(valid_plddt) if valid_plddt else None
     return plddt_list, model_name, mean_plddt
 
-# In render_linear_plot function
-def render_linear_plot(residue_vals, title, seq_len, vmin, vmax, protein_seq, model_name, plddt_list, mean_plddt,
-                       cmap_name='viridis', not_mapped_color='#BEFDF9', highlight_residues=[], ptm_data=None):
-    hex_colors, _, _ = generate_colormap(residue_vals, cmap_name, not_mapped_color)
-    mapped = [i for i, v in enumerate(residue_vals) if v is not None]
-    mapped_js = str(mapped)
-    
-    # Fixed pixel_per_res and total_width
-    pixel_per_res = 2 # Fixed at 2px per residue for consistency
-    total_width = max(1800, seq_len * pixel_per_res)  # Ensure minimum 1800px, scale with sequence
-    bar_height = 40
-    
-    # Push the bar down by 70 pixels to leave room for lollipops at the top
-    bar_y = 70
-    
-    label_offset = bar_y + bar_height + 15
-    # Clean up the bottom whitespace
-    total_height = label_offset + 30 
-    
-    bars = ""
-    for i in range(seq_len):
-        x = i * pixel_per_res
-        color = hex_colors[i]
-        width = pixel_per_res
-        aa = protein_seq[i] if i < len(protein_seq) else 'X'
-        z_val = f"{residue_vals[i]:.2f}" if residue_vals[i] is not None else "N/A"
-        tooltip = f"Pos {i+1} ({aa}): Z-Score={z_val}"
-        is_mapped = i in mapped
-        mapped_attr = 'True' if is_mapped else 'False'
-        
-        bars += f'<rect x="{x}" y="{bar_y}" width="{width}" height="{bar_height}" fill="{color}" '
-        bars += f'stroke="#666" stroke-width="0.5" data-pos="{i}" data-mapped="{mapped_attr}" title="{tooltip}" />'
-
-    ptm_lines = ""
-    label_font_size = 10
-
-    # Staggering logic for overlapping PTMs (replaces old ptm_y_offset logic entirely)
-    if ptm_data:
-        all_ptms = []
-        for unismod, info in ptm_data.items():
-            if info['selected']:
-                for pos in info['positions']:
-                    all_ptms.append({
-                        'pos': pos, 
-                        'label': info['label'], 
-                        'color': info['color']
-                    })
-        
-        all_ptms.sort(key=lambda item: item['pos'])
-        
-        for idx, ptm in enumerate(all_ptms):
-            pos = ptm['pos']
-            color = ptm['color']
-            label = ptm['label']
-            x = pos * pixel_per_res + (pixel_per_res / 2)
-            
-            stem_length = 25 if idx % 2 == 0 else 50
-            ptm_top_y = bar_y - stem_length
-            
-            ptm_lines += f'<line x1="{x}" y1="{ptm_top_y}" x2="{x}" y2="{bar_y}" stroke="{color}" stroke-width="2"/>'
-            ptm_lines += f'<circle cx="{x}" cy="{ptm_top_y}" r="6" fill="{color}" stroke="black" stroke-width="1.2"/>'
-            ptm_lines += (
-                f'<text x="{x}" y="{ptm_top_y - 4}" '
-                f'font-size="{label_font_size}" text-anchor="middle" '
-                f'fill="{color}" font-weight="bold">{label} ({pos+1})</text>'
-            )
-
-    label_step = max(1, int(50 / pixel_per_res))
-    labels = ""
-    for i in range(0, seq_len, label_step):
-        x = i * pixel_per_res + (pixel_per_res / 2)
-        labels += f'<text x="{x}" y="{label_offset}" font-size="12" text-anchor="middle" fill="#333">{i+1}</text>'
-    
-    mean_plddt_display = f"{mean_plddt:.1f}" if mean_plddt is not None else "N/A"
-    title_html = f'<div style="text-align:center; font-size:18px; margin-bottom:5px; font-weight:bold; color:#87CEEB;">{title}<br><span style="font-size:12px; color:#87CEEB;">{model_name} | Mean pLDDT: {mean_plddt_display}</span></div>'
-    svg = f'<svg width="{total_width + 20}" height="{total_height + 20}" style="overflow:visible; background:#fff; border:1px solid #ddd; border-radius:6px; padding:10px;">{bars}{ptm_lines}{labels}</svg>'
-    container_html = f'<div style="overflow-x:auto; max-width:100%; margin:10px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">{svg}</div>'
-    
-    js = f"""
-    <script>
-    const mapped = {mapped_js};
-    const rects = document.querySelectorAll('rect[data-pos]');
-    rects.forEach(el => {{
-      const pos = parseInt(el.getAttribute('data-pos'));
-      const isMapped = mapped.includes(pos);
-      if (isMapped) {{
-        el.style.cursor = 'pointer';
-        el.addEventListener('click', e => {{
-          const pos = parseInt(e.target.getAttribute('data-pos'));
-          window.parent.postMessage({{ type: 'SELECT_RESIDUE', residue: pos }}, '*');
-        }});
-      }}
-      el.addEventListener('mouseover', e => {{
-        if (e.target.title) {{
-          e.target.style.opacity = '0.7';
-          e.target.style.strokeWidth = '1';
-        }}
-      }});
-      el.addEventListener('mouseout', e => {{
-        e.target.style.opacity = '1';
-        e.target.style.strokeWidth = '0.5';
-      }});
-    }});
-    </script>
-    """
-    html_output = title_html + container_html + js
-    st.components.v1.html(html_output, height=200)
-    return None, None
-
-def add_ptm_spheres(viewer_idx, ptm_data, condition_name, view):
-    if ptm_data:
-        for unismod, info in ptm_data.items():
-            if info['selected']:
-                color = info['color']
-                for pos in info['positions']:
-                    resi_str = str(pos + 1)
-                    spec = {
-                        'center': {'resi': resi_str, 'atom': 'CA', 'chain': 'A'},
-                        'radius': 2.0,  # Larger for visibility
-                        'color': color,
-                        'alpha': 1.0,
-                        'zOffset': 10.0  # Push forward
-                    }
-                    try:
-                        view.addSphere(spec, viewer=(0, viewer_idx))
-                        #Fallback label
-                        label_text = info.get('label', f"{unismod}") # Uses your custom label, or just the number
-                        view.addLabel(label_text, {'fontSize': 12, 'fontColor': color, 'backgroundColor': 'white', 'backgroundOpacity': 0.5},
-                                    {'resi': resi_str, 'chain': 'A'}, viewer=(0, viewer_idx))
-                    except Exception as e:
-                        st.error(f"Failed to add sphere for UniMod:{unismod} at {resi_str}: {e}")
-        view.render()
-
-def render_synced_viewers(pdb_str, residue_vals1, residue_vals2, bg_color, title1, title2, cmap_name='autumn', not_mapped_color='#d3d3d3', ptm_data1=None, ptm_data2=None):
-    hex_colors1, vmin1, vmax1 = generate_colormap(residue_vals1, cmap_name, not_mapped_color)
-    hex_colors2, vmin2, vmax2 = generate_colormap(residue_vals2, cmap_name, not_mapped_color)
-    residues_js1 = json.dumps([i for i, v in enumerate(residue_vals1) if v is not None])
-    residues_js2 = json.dumps([i for i, v in enumerate(residue_vals2) if v is not None])
-    
-    view = py3Dmol.view(width='95vw', height='400px', viewergrid=(1,2), linked=True)
-    view.addModel(pdb_str, 'pdb', viewer=(0,0))
-    view.addModel(pdb_str, 'pdb', viewer=(0,1))
-    bg_color_map = {'white': '#FFFFFF', 'black': '#000000', 'darkgrey': '#4A4A4A'}
-    bg_color_hex = bg_color_map.get(bg_color.lower(), '#000000')
-    view.setBackgroundColor(bg_color_hex, viewer=(0,0))
-    view.setBackgroundColor(bg_color_hex, viewer=(0,1))
-    view.setStyle({}, {'cartoon': {'color': 'lightgray'}}, viewer=(0,0))
-    view.setStyle({}, {'cartoon': {'color': 'lightgray'}}, viewer=(0,1))
-    
-    for i, c in enumerate(hex_colors1):
-        view.setStyle({'resi': str(i+1)}, {'cartoon': {'color': c}}, viewer=(0,0))
-    for i, c in enumerate(hex_colors2):
-        view.setStyle({'resi': str(i+1)}, {'cartoon': {'color': c}}, viewer=(0,1))
-    
-    add_ptm_spheres(0, ptm_data1, title1, view)
-    add_ptm_spheres(1, ptm_data2, title2, view)
-    
-    view.zoomTo(viewer=(0,0))
-    view.zoomTo(viewer=(0,1))
-    view.render()
-    
-    hover_js = """
-    <script>
-    document.addEventListener("DOMContentLoaded", function() {
-        function tryInitViewers(retryCount = 5, delay = 500) {
-            try {
-                const viewerElems = document.getElementsByClassName("viewer_3Dmoljs");
-                if (viewerElems.length < 2) {
-                    if (retryCount > 0) {
-                        console.warn(`Not enough viewer elements found (${viewerElems.length}/2), retrying in ${delay}ms`);
-                        setTimeout(() => tryInitViewers(retryCount - 1, delay), delay);
-                    } else {
-                        console.error("Failed to find enough viewer elements after retries");
-                    }
-                    return;
-                }
-                const viewer0 = viewerElems[0].querySelector('div > canvas').parentElement.viewer;
-                const viewer1 = viewerElems[1].querySelector('div > canvas').parentElement.viewer;
-                const residues1 = JSON.parse('{residues_js1}');
-                const residues2 = JSON.parse('{residues_js2}');
-                
-                const container = viewerElems[0].parentElement;
-                const divider = document.createElement('div');
-                divider.id = 'viewerDivider';
-                divider.style.position = 'absolute';
-                divider.style.height = '400px';
-                divider.style.width = '20px';
-                divider.style.backgroundColor = '#666';
-                divider.style.left = '50%';
-                divider.style.top = '0';
-                divider.style.zIndex = '100';
-                divider.style.transform = 'translateX(-10px)';
-                container.appendChild(divider);
-                
-                setTimeout(() => {
-                    const rect0 = viewerElems[0].getBoundingClientRect();
-                    const rect1 = viewerElems[1].getBoundingClientRect();
-                    const midX = (rect0.right + rect1.left) / 2;
-                    divider.style.left = midX + 'px';
-                    divider.style.transform = 'translateX(-10px)';
-                    console.log("Divider position set to:", midX);
-                }, 500);
-                
-                function handlePick(viewer, residues) {
-                    return function(atom, event) {
-                        if (!atom) return;
-                        const resi = parseInt(atom.resi, 10) - 1;
-                        if (residues.includes(resi)) {
-                            window.parent.postMessage({ type: "SELECT_RESIDUE", residue: resi }, "*");
-                            console.log("3D click sent for pos:", resi);
-                        }
-                    }
-                }
-                viewer0.setClickable({}, true, handlePick(viewer0, residues1));
-                viewer1.setClickable({}, true, handlePick(viewer1, residues2));
-            } catch(e) {
-                console.error("3Dmol pick init error", e);
-                if (retryCount > 0) {
-                    setTimeout(() => tryInitViewers(retryCount - 1, delay), delay);
-                }
-            }
-        }
-        tryInitViewers();
-    });
-    </script>
-    """
-    hover_js = hover_js.replace('{residues_js1}', residues_js1).replace('{residues_js2}', residues_js2)
-    
-    listener_js = """
-    <script>
-    document.addEventListener("DOMContentLoaded", function() {
-        let previous_selected = null;
-        const observer = new MutationObserver(() => {
-            const viewerElems = document.getElementsByClassName("viewer_3Dmoljs");
-            if (viewerElems.length >= 2) {
-                observer.disconnect();
-                console.log("3D viewers detected.");
-            }
-        });
-        observer.observe(document.body, { childList: true, subtree: true });
-        
-        window.addEventListener("message", (event) => {
-            if (event.data && event.data.type === "SELECT_RESIDUE") {
-                const residue = event.data.residue;
-                console.log("Received SELECT_RESIDUE for pos:", residue);
-                try {
-                    const viewerElems = document.getElementsByClassName("viewer_3Dmoljs");
-                    if (viewerElems.length < 2) {
-                        console.warn("Viewers not ready - retrying in 100ms");
-                        setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: event.data })), 100);
-                        return;
-                    }
-                    const viewer0 = viewerElems[0].querySelector('div > canvas').parentElement.viewer;
-                    const viewer1 = viewerElems[1].querySelector('div > canvas').parentElement.viewer;
-                    
-                    if (previous_selected !== null) {
-                        const prev_span = document.querySelector(`.aa[data-pos="${previous_selected}"]`);
-                        if (prev_span) {
-                            prev_span.style.backgroundColor = "";
-                            prev_span.style.fontWeight = "";
-                        }
-                        const prev_bars = document.querySelectorAll(`rect[data-pos="${previous_selected}"]`);
-                        prev_bars.forEach(bar => {
-                            bar.style.stroke = "none";
-                            bar.style.strokeWidth = "0";
-                        });
-                        viewer0.removeAllShapes();
-                        viewer1.removeAllShapes();
-                        viewer0.render();
-                        viewer1.render();
-                    }
-                    
-                    const span = document.querySelector(`.aa[data-pos="${residue}"]`);
-                    if (span) {
-                        span.style.backgroundColor = "yellow";
-                        span.style.fontWeight = "bold";
-                    }
-                    const bars = document.querySelectorAll(`rect[data-pos="${residue}"]`);
-                    bars.forEach(bar => {
-                        bar.style.stroke = "red";
-                        bar.style.strokeWidth = "2";
-                    });
-                    
-                    const resi_str = (residue + 1).toString();
-                    const spec = {center: {resi: resi_str, atom: 'CA'}, radius: 5.0, color: 'red', alpha: 0.6};
-                    viewer0.addSphere(spec);
-                    viewer1.addSphere(spec);
-                    viewer0.center({resi: resi_str, atom: 'CA'});
-                    viewer1.center({resi: resi_str, atom: 'CA'});
-                    viewer0.render();
-                    viewer1.render();
-                    previous_selected = residue;
-                } catch (e) {
-                    console.error("Error adding 3D highlight:", e);
-                }
-            }
-        });
-    });
-    </script>
-    """
-    
-    html = view._make_html()
-    st.markdown(f"#### {title1} (Left) | {title2} (Right)")
-    st.components.v1.html(html + hover_js, height=420)
-    st.components.v1.html(listener_js, height=0)
-
 def create_download_zip(protein_of_interest, pdb_str, peptide_data, residue_data, conditions, min_max_logs, seq_len, cmap_name='autumn', not_mapped_color='#d3d3d3', ptm_data=None, selected_df=None, protein_seq=None,apply_tryptic=None):
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
@@ -622,22 +316,7 @@ def format_sequence_for_display(seq, residue_data, condition1_name, condition2_n
         seq_line += f"<span style='margin-left: auto;'>{end}</span></div>"
         lines.append(num_line + seq_line)
     seq_html = "<div id='seq-panel' style='padding:10px; background:#fafafa; border-radius:6px; border:1px solid #ddd;'>" + "".join(lines) + "</div>"
-    js = f"""
-    <script>
-    const mapped = {mapped_js};
-    document.querySelectorAll('.aa').forEach(el => {{
-        const pos = parseInt(el.getAttribute('data-pos'));
-        if (mapped.includes(pos)) {{
-            el.style.cursor = 'pointer';
-            el.addEventListener('click', e => {{
-                window.parent.postMessage({{ type: 'SELECT_RESIDUE', residue: pos }}, '*');
-                console.log("Sequence click sent for pos:", pos);
-            }});
-        }}
-    }});
-    </script>
-    """
-    return seq_html + js
+    return seq_html
 
 def sequence_copy_component(seq):
     seq_escaped = seq.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -1050,8 +729,8 @@ if csv_file and fasta_file:
                 
                 st.subheader("Detected Sequence")
                 st.markdown(f"**FASTA header:** {matched_header}")
-                seq_html = format_sequence_for_display(protein_seq, residue_data, condition1_name, condition2_name, line_len=150, group=20)
                 copy_html = sequence_copy_component(protein_seq)
+                seq_html = format_sequence_for_display(protein_seq, residue_data, condition1_name, condition2_name, line_len=150, group=20)
                 st.components.v1.html(copy_html + seq_html, height=320)
                 
                 # PDB fetching or upload
@@ -1145,30 +824,72 @@ if csv_file and fasta_file:
                         f'</div>',
                         unsafe_allow_html=True
                     )
-                    render_synced_viewers(pdb_str, residue_data[condition1_name], residue_data[condition2_name], bg_color, condition1_name, condition2_name, selected_cmap, selected_not_mapped_color, ptm_data[condition1_name], ptm_data[condition2_name])
-                    st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
-                    
-                    # Calculate coverage for each condition
+                    # ===== NGL BIDIRECTIONAL SYNC INSERTION POINT =====
                     coverage1 = (sum(1 for v in residue_data[condition1_name] if v is not None) / seq_len * 100) if seq_len > 0 else 0
                     coverage2 = (sum(1 for v in residue_data[condition2_name] if v is not None) / seq_len * 100) if seq_len > 0 else 0
-                    
-                    # Linear Sequence Visualizations
-                    st.subheader("Linear Sequence Visualizations")
-                    st.markdown(
-                        f'<div style="font-size:16px; color:#87CEEB;margin-top:5px; margin-bottom:5px;">{condition1_name} (Coverage: {coverage1:.1f}%)</div>',
-                        unsafe_allow_html=True
-                    )
-                    render_linear_plot(residue_data[condition1_name], condition1_name, seq_len,
-                                      min_max_logs[condition1_name][0], min_max_logs[condition1_name][1], protein_seq, model_name, plddt_list, mean_plddt, cmap_name=selected_cmap, not_mapped_color=selected_not_mapped_color, ptm_data=ptm_data[condition1_name])
-                    st.markdown(
-                        f'<div style="font-size:16px; color:#87CEEB; margin-top:5px;margin-bottom:5px;">{condition2_name} (Coverage: {coverage2:.1f}%)</div>',
-                        unsafe_allow_html=True
-                    )
-                    render_linear_plot(residue_data[condition2_name], condition2_name, seq_len,
-                                      min_max_logs[condition2_name][0], min_max_logs[condition2_name][1], protein_seq, model_name, plddt_list, mean_plddt, cmap_name=selected_cmap, not_mapped_color=selected_not_mapped_color, ptm_data=ptm_data[condition2_name])
-                    
-                    st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
 
+                    hex_colors1, _, _ = generate_colormap(residue_data[condition1_name], selected_cmap, selected_not_mapped_color)
+                    hex_colors2, _, _ = generate_colormap(residue_data[condition2_name], selected_cmap, selected_not_mapped_color)
+
+                    st.markdown("#### 🧬 3D Viewer Options")
+                    opt_col1, opt_col2 = st.columns([1, 1])
+                    with opt_col1:
+                        backbone_style_choice = st.radio(
+                            "Protein backbone representation",
+                            options=["🎀 Ribbon (Cartoon)", "⚛️ CPK / Hyperball (atomic)"],
+                            index=0,
+                            key="backbone_style_choice",
+                            help="PTM sites always render as hyperball models regardless of this setting."
+                        )
+                        backbone_style = "cpk" if backbone_style_choice.startswith("⚛️") else "ribbon"
+                    with opt_col2:
+                        enable_surface = st.toggle("Render Solvent Accessible Surface", value=False, key="enable_surface_toggle")
+                        surface_opacity = st.slider("Surface Opacity", 0.0, 1.0, 0.3, key="surface_opacity_slider") if enable_surface else 0.0
+
+                    st.caption("🎯 Manual Structure Region Selector — pick any residue range to zoom into, independent of detected peptides. Applies to both conditions.")
+                    if 'manual_zoom' not in st.session_state:
+                        st.session_state.manual_zoom = None
+                    mz_default_start = st.session_state.manual_zoom["start"] if st.session_state.manual_zoom else 1
+                    mz_default_end = st.session_state.manual_zoom["end"] if st.session_state.manual_zoom else min(20, seq_len)
+                    mz_col1, mz_col2, mz_col3, mz_col4 = st.columns([1, 1, 1, 1])
+                    with mz_col1:
+                        manual_start = st.number_input("Start residue", min_value=1, max_value=seq_len, value=min(mz_default_start, seq_len), key="manual_start_input")
+                    with mz_col2:
+                        manual_end = st.number_input("End residue", min_value=1, max_value=seq_len, value=min(mz_default_end, seq_len), key="manual_end_input")
+                    with mz_col3:
+                        if st.button("🔍 Zoom to Range", use_container_width=True):
+                            lo, hi = sorted([int(manual_start), int(manual_end)])
+                            st.session_state.manual_zoom = {"start": lo, "end": hi}
+                            st.rerun()
+                    with mz_col4:
+                        if st.button("✕ Clear Zoom", use_container_width=True):
+                            st.session_state.manual_zoom = None
+                            st.rerun()
+
+                    render_bidirectional_ngl_view(
+                        pdb_str=pdb_str,
+                        seq_len=seq_len,
+                        protein_seq=protein_seq,
+                        plddt_list=plddt_list,
+                        model_name=model_name,
+                        mean_plddt=mean_plddt,
+                        cond1_name=condition1_name,
+                        cond2_name=condition2_name,
+                        zvals1=residue_data[condition1_name],
+                        zvals2=residue_data[condition2_name],
+                        colors1=hex_colors1,
+                        colors2=hex_colors2,
+                        ptm_data1=ptm_data[condition1_name],
+                        ptm_data2=ptm_data[condition2_name],
+                        coverage1=coverage1,
+                        coverage2=coverage2,
+                        bg_color=bg_color,
+                        backbone_style=backbone_style,
+                        enable_surface=enable_surface,
+                        surface_opacity=surface_opacity,
+                        manual_zoom=st.session_state.manual_zoom,
+                    )
+                    # ===== END NGL BIDIRECTIONAL SYNC INSERTION POINT =====
 
                     # Colorbar
                     st.subheader("Colorbar")
@@ -1224,4 +945,3 @@ if csv_file and fasta_file:
                         st.session_state.all_unimods = []
                         st.session_state.selected_unimods = []
                         st.rerun()
-
