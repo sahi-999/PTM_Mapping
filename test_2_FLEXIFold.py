@@ -500,7 +500,7 @@ def create_download_zip(protein_of_interest, pdb_str, peptide_data, residue_data
             plt.close(fig)
         
         # Add PTM positions CSV (inspired by first code)
-        if selected_df is not None and  is not None:
+        if selected_df is not None:
             ptm_rows = []
             for idx, row in selected_df.iterrows():
                 protein = row['Protein.Group']
