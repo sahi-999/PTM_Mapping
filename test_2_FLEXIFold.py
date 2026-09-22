@@ -440,7 +440,7 @@ def render_synced_viewers(pdb_str, residue_vals1, residue_vals2, bg_color, title
     st.markdown(f"#### {title1} (Left) | {title2} (Right)")
     st.components.v1.html(custom_viewer_html, height=440)
 
-def create_download_zip(protein_of_interest, pdb_str, peptide_data, residue_data, conditions, min_max_logs, seq_len, cmap_name='autumn', not_mapped_color='#d3d3d3', ptm_data=None, selected_df=None, =None,apply_tryptic=None):
+def create_download_zip(protein_of_interest, pdb_str, peptide_data, residue_data, conditions, min_max_logs, seq_len, cmap_name='autumn', not_mapped_color='#d3d3d3', ptm_data=None, selected_df=None,apply_tryptic=None):
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
         zipf.writestr(f"{protein_of_interest}_protein.pdb", pdb_str)
