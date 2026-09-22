@@ -339,7 +339,267 @@ def sequence_copy_component(seq):
     </script>
     """
     return html
+def render_bidirectional_ngl_view(pdb_str, seq_len, protein_seq, plddt_list, model_name, mean_plddt, 
+                                  cond1_name, cond2_name, zvals1, zvals2, colors1, colors2, 
+                                  ptm_data1, ptm_data2, coverage1, coverage2, bg_color, 
+                                  backbone_style, enable_surface, surface_opacity, manual_zoom):
 
+    # Prep PTM dictionaries into simple residue-indexed arrays for JS
+    def prep_ptm_map(ptm_data):
+        arr = [None] * seq_len
+        if ptm_data and isinstance(ptm_data, dict):
+            for uid, info in ptm_data.items():
+                if info.get('selected'):
+                    for pos in info.get('positions', []):
+                        if 0 <= pos < seq_len:
+                            arr[pos] = {"name": info.get('label', uid), "color": info.get('color', '#ff0000')}
+        return arr
+
+    bg_color_map = {'white': '#FFFFFF', 'black': '#000000', 'darkgrey': '#4A4A4A'}
+    bg_color_hex = bg_color_map.get(bg_color.lower(), '#0b0f19')
+
+    js_data = {
+        "pdb_str": pdb_str, "seq_len": seq_len, "protein_seq": protein_seq, "plddt": plddt_list,
+        "cond1_name": cond1_name, "cond2_name": cond2_name,
+        "zvals1": zvals1, "zvals2": zvals2, "colors1": colors1, "colors2": colors2,
+        "ptm1": prep_ptm_map(ptm_data1), "ptm2": prep_ptm_map(ptm_data2),
+        "bg_color": bg_color_hex, "backbone_style": backbone_style,
+        "enable_surface": bool(enable_surface), "surface_opacity": float(surface_opacity),
+        "manual_zoom": manual_zoom
+    }
+
+    custom_viewer_html = """
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: system-ui, -apple-system, sans-serif; }
+        .ngl-container { display: flex; width: 100%; gap: 16px; }
+        .col-panel { flex: 1; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+        
+        .panel-header { font-size: 13px; font-weight: bold; color: #38bdf8; background: #0f172a; padding: 6px 10px; border-radius: 6px; border: 1px solid #1e293b; display: flex; justify-content: space-between; }
+        .viewport-ov { width: 100%; height: 380px; background-color: """ + bg_color_hex + """; border: 1px solid #1e293b; border-radius: 8px; position: relative; overflow: hidden; }
+        .viewport-zm { width: 100%; height: 250px; background-color: """ + bg_color_hex + """; border: 1px solid #1e293b; border-radius: 8px; position: relative; overflow: hidden; }
+        .vp-label { position: absolute; top: 6px; left: 8px; z-index: 10; color: #cbd5e1; font-size: 11px; background: rgba(15,23,42,0.7); padding: 2px 6px; border-radius: 4px; pointer-events: none; }
+        
+        .seq-container { height: 160px; overflow-y: auto; padding: 10px; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; letter-spacing: 3px; line-height: 28px; font-family: monospace; font-size: 14px; word-break: break-all; user-select: none; }
+        .aa-span { padding: 2px 4px; border-radius: 4px; cursor: pointer; position: relative; transition: all 0.1s; }
+        .ptm-dot { position: absolute; top: -2px; left: 50%; transform: translateX(-50%); width: 6px; height: 6px; border-radius: 50%; border: 1px solid #fff; }
+        .divider { width: 2px; background: #334155; border-radius: 1px; }
+
+        #hover-hud { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: rgba(15,23,42,0.95); padding: 10px 20px; border-radius: 8px; color: white; font-size: 13px; z-index: 9999; display: none; border: 1px solid #334155; box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.3); }
+        .hud-val { font-weight: bold; margin-left: 4px; }
+    </style>
+
+    <div class="ngl-container">
+        <!-- CONDITION 1 PANEL -->
+        <div class="col-panel">
+            <div class="panel-header"><span>🔭 <span id="c1-name"></span></span> <span style="color:#94a3b8">Coverage: <span id="c1-cov"></span>%</span></div>
+            <div id="vp1_ov" class="viewport-ov"><div class="vp-label">Overview</div></div>
+            <div id="vp1_zm" class="viewport-zm"><div class="vp-label">Zoomed Inset</div></div>
+            <div id="seq1" class="seq-container"></div>
+        </div>
+
+        <div class="divider"></div>
+
+        <!-- CONDITION 2 PANEL -->
+        <div class="col-panel">
+            <div class="panel-header"><span>🔭 <span id="c2-name"></span></span> <span style="color:#94a3b8">Coverage: <span id="c2-cov"></span>%</span></div>
+            <div id="vp2_ov" class="viewport-ov"><div class="vp-label">Overview</div></div>
+            <div id="vp2_zm" class="viewport-zm"><div class="vp-label">Zoomed Inset</div></div>
+            <div id="seq2" class="seq-container"></div>
+        </div>
+    </div>
+
+    <div id="hover-hud">
+        <div style="margin-bottom:4px; border-bottom:1px solid #475569; padding-bottom:4px;">
+            <span style="color:#38bdf8; font-weight:bold;">Residue <span id="hud-resi">--</span></span>
+            <span style="margin-left:15px; color:#cbd5e1;">pLDDT: <span id="hud-plddt" class="hud-val">--</span></span>
+        </div>
+        <div>
+            <span id="hud-c1-name"></span> Z-Score: <span id="hud-z1" class="hud-val" style="color:#10b981;">--</span> <span style="margin:0 10px; color:#475569;">|</span>
+            <span id="hud-c2-name"></span> Z-Score: <span id="hud-z2" class="hud-val" style="color:#f43f5e;">--</span>
+        </div>
+        <div id="hud-ptm" style="margin-top:4px; font-weight:bold; display:none;"></div>
+    </div>
+
+    <script src="https://unpkg.com/ngl@2.0.0-dev.37/dist/ngl.js"></script>
+    <script>
+        const data = """ + json.dumps(js_data) + """;
+
+        // Populate Headers
+        document.getElementById('c1-name').innerText = data.cond1_name; document.getElementById('hud-c1-name').innerText = data.cond1_name;
+        document.getElementById('c2-name').innerText = data.cond2_name; document.getElementById('hud-c2-name').innerText = data.cond2_name;
+        document.getElementById('c1-cov').innerText = """ + f"{coverage1:.1f}" + """;
+        document.getElementById('c2-cov').innerText = """ + f"{coverage2:.1f}" + """;
+
+        // Initialize 4 NGL Stages
+        const st1_ov = new NGL.Stage("vp1_ov", {backgroundColor: data.bg_color});
+        const st1_zm = new NGL.Stage("vp1_zm", {backgroundColor: data.bg_color});
+        const st2_ov = new NGL.Stage("vp2_ov", {backgroundColor: data.bg_color});
+        const st2_zm = new NGL.Stage("vp2_zm", {backgroundColor: data.bg_color});
+        let c1_ov, c1_zm, c2_ov, c2_zm;
+        let selectedSeg = null;
+
+        // Camera Synchronization
+        let isSync_ov = false, isSync_zm = false;
+        st1_ov.viewer.controls.addEventListener("change", () => { if(!isSync_ov) { isSync_ov = true; st2_ov.viewer.setOrientation(st1_ov.viewer.getOrientation()); isSync_ov = false; }});
+        st2_ov.viewer.controls.addEventListener("change", () => { if(!isSync_ov) { isSync_ov = true; st1_ov.viewer.setOrientation(st2_ov.viewer.getOrientation()); isSync_ov = false; }});
+        st1_zm.viewer.controls.addEventListener("change", () => { if(!isSync_zm) { isSync_zm = true; st2_zm.viewer.setOrientation(st1_zm.viewer.getOrientation()); isSync_zm = false; }});
+        st2_zm.viewer.controls.addEventListener("change", () => { if(!isSync_zm) { isSync_zm = true; st1_zm.viewer.setOrientation(st2_zm.viewer.getOrientation()); isSync_zm = false; }});
+
+        // Register Z-score Schemes
+        const pairs1 = [], pairs2 = [];
+        data.colors1.forEach((hex, i) => pairs1.push([hex, (i+1)+":A"]));
+        data.colors2.forEach((hex, i) => pairs2.push([hex, (i+1)+":A"]));
+        const scheme1 = NGL.ColorMakerRegistry.addSelectionScheme(pairs1);
+        const scheme2 = NGL.ColorMakerRegistry.addSelectionScheme(pairs2);
+
+        // Build 1D Sequence Grids
+        function buildSeq(containerId, colors, ptmMap) {
+            const cont = document.getElementById(containerId);
+            data.protein_seq.split('').forEach((letter, i) => {
+                const span = document.createElement('span');
+                span.innerText = letter; span.className = 'aa-span'; span.dataset.rn = i + 1;
+                
+                if (colors[i] !== '#d3d3d3' && colors[i] !== data.bg_color) {
+                    span.style.backgroundColor = colors[i] + '40'; 
+                    span.style.color = '#000';
+                    span.style.fontWeight = 'bold';
+                    span.style.borderBottom = '3px solid ' + colors[i];
+                } else {
+                    span.style.color = '#94a3b8';
+                }
+                span.dataset.origBg = span.style.backgroundColor || 'transparent';
+                span.dataset.origBorder = span.style.borderBottom || 'none';
+
+                if (ptmMap[i]) {
+                    const dot = document.createElement('div'); dot.className = 'ptm-dot';
+                    dot.style.backgroundColor = ptmMap[i].color; span.appendChild(dot);
+                }
+
+                span.addEventListener('click', () => triggerSelect(i + 1));
+                span.addEventListener('mouseenter', () => updateHUD(i));
+                span.addEventListener('mouseleave', () => document.getElementById('hover-hud').style.display='none');
+                cont.appendChild(span);
+            });
+        }
+        buildSeq('seq1', data.colors1, data.ptm1);
+        buildSeq('seq2', data.colors2, data.ptm2);
+
+        // Structural Rendering Engine
+        function renderComp(comp, isZoom, schemeId, ptmMap) {
+            comp.removeAllRepresentations();
+            if (!selectedSeg) {
+                if (isZoom) return; // Empty zoom panel by default
+                
+                // Full Z-Score backbone
+                comp.addRepresentation(data.backbone_style === 'cpk' ? 'hyperball' : 'cartoon', {
+                    sele: "polymer", color: schemeId, opacity: 1.0
+                });
+                if (data.enable_surface) comp.addRepresentation("surface", { sele: "polymer", color: "electrostatic", surfaceType: "sas", opacity: data.surface_opacity });
+
+                // Anchor spheres for PTMs
+                ptmMap.forEach((ptm, i) => {
+                    if (ptm) comp.addRepresentation("spacefill", { sele: (i+1)+":A AND .CA", color: ptm.color, scale: 0.8 });
+                });
+            } else {
+                const selSele = selectedSeg.start + "-" + selectedSeg.end + ":A";
+                const unselSele = "polymer AND NOT (" + selSele + ")";
+
+                // Ghosted structure for Overview
+                if (!isZoom) {
+                    comp.addRepresentation(data.backbone_style === 'cpk' ? 'hyperball' : 'cartoon', {
+                        sele: unselSele, color: "#475569", opacity: 0.15
+                    });
+                }
+                
+                // Highlighted region
+                comp.addRepresentation(data.backbone_style === 'cpk' ? 'hyperball' : 'cartoon', {
+                    sele: selSele, color: schemeId, opacity: 1.0
+                });
+                if (data.backbone_style === 'ribbon') comp.addRepresentation("tube", { sele: selSele, color: schemeId, radius: 0.45 });
+
+                // PTM Hyperballs + Labels in selected range
+                for(let i = selectedSeg.start - 1; i < selectedSeg.end; i++) {
+                    if (ptmMap[i]) {
+                        comp.addRepresentation("hyperball", { sele: (i+1)+":A AND (sidechain OR .CA OR .C OR .N OR .O)", color: ptmMap[i].color, scale: 0.4 });
+                        comp.addRepresentation("spacefill", { sele: (i+1)+":A AND .CA", color: ptmMap[i].color, scale: 0.6 });
+                        if (isZoom) {
+                            comp.addRepresentation("label", {
+                                sele: (i+1)+":A AND .CA", labelText: ptmMap[i].name, color: ptmMap[i].color,
+                                scale: 1.5, showBackground: true, backgroundColor: "black"
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        function applyReps() {
+            renderComp(c1_ov, false, scheme1, data.ptm1);
+            renderComp(c1_zm, true,  scheme1, data.ptm1);
+            renderComp(c2_ov, false, scheme2, data.ptm2);
+            renderComp(c2_zm, true,  scheme2, data.ptm2);
+        }
+
+        // Selection & Hover Logic
+        function updateHUD(i) {
+            document.getElementById('hud-resi').innerText = data.protein_seq[i] + (i+1);
+            document.getElementById('hud-plddt').innerText = (data.plddt[i] || 0).toFixed(1);
+            document.getElementById('hud-z1').innerText = data.zvals1[i] !== null ? data.zvals1[i].toFixed(2) : 'N/A';
+            document.getElementById('hud-z2').innerText = data.zvals2[i] !== null ? data.zvals2[i].toFixed(2) : 'N/A';
+            
+            const ptm = data.ptm1[i] || data.ptm2[i];
+            const ptmEl = document.getElementById('hud-ptm');
+            if (ptm) { ptmEl.style.display = 'block'; ptmEl.innerHTML = "PTM: <span style='color:"+ptm.color+";'>"+ptm.name+"</span>"; }
+            else { ptmEl.style.display = 'none'; }
+            document.getElementById('hover-hud').style.display = 'block';
+        }
+
+        function triggerSelect(resi) {
+            selectedSeg = {start: resi, end: resi};
+            applyReps();
+            c1_zm.autoView(resi+":A", 1000); c2_zm.autoView(resi+":A", 1000);
+            
+            document.querySelectorAll('.aa-span').forEach(span => {
+                if (parseInt(span.dataset.rn) === resi) {
+                    span.style.backgroundColor = '#ffe4e6';
+                    span.style.borderBottom = '3px solid #e11d48';
+                } else {
+                    span.style.backgroundColor = span.dataset.origBg;
+                    span.style.borderBottom = span.dataset.origBorder;
+                }
+            });
+        }
+
+        function handlePick(proxy) {
+            if (proxy && (proxy.atom || proxy.bond)) {
+                const atom = proxy.atom || proxy.bond.atom1;
+                if (atom && atom.resno) triggerSelect(atom.resno);
+            } else {
+                selectedSeg = null; applyReps();
+                c1_ov.autoView(1000); c2_ov.autoView(1000);
+                document.querySelectorAll('.aa-span').forEach(s => { s.style.backgroundColor = s.dataset.origBg; s.style.borderBottom = s.dataset.origBorder; });
+            }
+        }
+        [st1_ov, st1_zm, st2_ov, st2_zm].forEach(st => st.signals.clicked.add(handlePick));
+
+        // Load PDB
+        const blob = new Blob([data.pdb_str], { type: 'text/plain' });
+        Promise.all([ st1_ov.loadFile(blob,{ext:'pdb'}), st1_zm.loadFile(blob,{ext:'pdb'}), st2_ov.loadFile(blob,{ext:'pdb'}), st2_zm.loadFile(blob,{ext:'pdb'}) ]).then(cs => {
+            [c1_ov, c1_zm, c2_ov, c2_zm] = cs;
+            
+            if (data.manual_zoom && data.manual_zoom.start) {
+                selectedSeg = {start: data.manual_zoom.start, end: data.manual_zoom.end};
+                const sSele = selectedSeg.start + "-" + selectedSeg.end + ":A";
+                setTimeout(() => { c1_zm.autoView(sSele, 1000); c2_zm.autoView(sSele, 1000); }, 200);
+            }
+            applyReps();
+            c1_ov.autoView(); c2_ov.autoView();
+        });
+    </script>
+    """
+    st.components.v1.html(custom_viewer_html, height=900)
+                                      
 # --- Main App UI ---
 html_content = """
 <div style="position: relative; width: 100%; overflow: hidden; background-color: #1a1a2e; padding: 20px 0;">
@@ -727,11 +987,11 @@ if csv_file and fasta_file:
                 else:
                     ptm_data = {condition1_name: None, condition2_name: None}
                 
-                st.subheader("Detected Sequence")
-                st.markdown(f"**FASTA header:** {matched_header}")
-                copy_html = sequence_copy_component(protein_seq)
-                seq_html = format_sequence_for_display(protein_seq, residue_data, condition1_name, condition2_name, line_len=150, group=20)
-                st.components.v1.html(copy_html + seq_html, height=320)
+                #st.subheader("Detected Sequence")
+                #st.markdown(f"**FASTA header:** {matched_header}")
+                #copy_html = sequence_copy_component(protein_seq)
+                #seq_html = format_sequence_for_display(protein_seq, residue_data, condition1_name, condition2_name, line_len=150, group=20)
+                #st.components.v1.html(copy_html + seq_html, height=320)
                 
                 # PDB fetching or upload
                 if st.session_state.pdb_source == "AlphaFold":
